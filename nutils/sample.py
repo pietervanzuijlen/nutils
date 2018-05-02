@@ -232,7 +232,8 @@ class Sample(types.Singleton):
         The sampled data.
     '''
 
-    return function.Sampled(self, array)
+    index, tail = function.FindTransform(tuple(t[0] for t in self.transforms), function.Promote(self.ndims, trans=function.TRANS))
+    return function.Sampled(self, array, index, function.ApplyTransforms(tail))
 
   @property
   def tri(self):

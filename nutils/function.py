@@ -2009,24 +2009,23 @@ class Sampled(Array):
       The set of points that the data was sampled on.
   array :
       The sampled data.
-  trans : :class:`TransformChain` (optional)
+  index : :class:`TransformChain` (optional)
       The transformation chain that is used to locate the sample points.
   '''
 
   __slots__ = 'sample', 'array'
 
   @types.apply_annotations
-  def __init__(self, sample, array:types.frozenarray, trans:types.strict[TransformChain]=TRANS):
+  def __init__(self, sample, array:types.frozenarray, index:asarray, points:asarray):
     assert len(array) == sample.npoints, 'array shape does not match sample: len(array)={}, sample.npoints={}'.format(len(array), sample.npoints)
     self.sample = sample
     self.array = array
-    super().__init__(args=[Promote(sample.ndims, trans), POINTS], shape=array.shape[1:], dtype=array.dtype)
+    super().__init__(args=[index, points], shape=array.shape[1:], dtype=array.dtype)
 
-  def evalf(self, trans, points):
-    i, head = transform.lookup_item(trans, [trans[0] for trans in self.sample.transforms])
-    assert numpy.equal(transform.apply(head, points), self.sample.points[i].coords).all(), 'illegal point set'
-    index = self.sample.index[i]
-    return self.array[index]
+  def evalf(self, index, points):
+    index, = index
+    assert numpy.equal(points, self.sample.points[index].coords).all(), 'illegal point set'
+    return self.array[self.sample.index[index]]
 
 class Elemwise(Array):
 
@@ -3548,11 +3547,8 @@ def polyfunc(coeffs:types.tuple[types.frozenarray], dofs:types.tuple[types.froze
   func = Polyval(Elemwise(coeffs, index, dtype=float), points)
   return Inflate(func, dofmap, ndofs, axis=0)
 
-def elemwise(fmap, shape, default=None):
-  if default is not None:
-    raise NotImplemented('default is not supported anymore')
-  transforms = tuple(sorted(fmap))
-  values = tuple(fmap[trans] for trans in transforms)
+@types.apply_annotations
+def elemwise(transforms:types.tuple[transform.stricttransform], values:types.tuple[types.frozenarray], shape:types.tuple[types.strictint]):
   fromdims, = set(transform[-1].fromdims for transform in transforms)
   promote = Promote(fromdims, trans=TRANS)
   index, tail = FindTransform(transforms, promote)
