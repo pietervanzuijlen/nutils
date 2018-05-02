@@ -391,19 +391,17 @@ class Promote(TransformChain):
     head, tail = transform.promote(trans, self.ndims)
     return head + tail
 
-class TailOfTransform(TransformChain):
+class TransformChainFromTuple(TransformChain):
 
-  __slots__ = ()
+  __slots__ = 'index',
 
-  @types.apply_annotations
-  def __init__(self, trans:strictevaluable, depth:asarray, todims:types.strictint):
-    assert depth.ndim == 0 and depth.dtype == int
-    super().__init__(args=[trans, depth], todims=todims)
+  def __init__(self, values:strictevaluable, index:types.strictint, todims:types.strictint=None):
+    assert 0 <= index < len(values)
+    self.index = index
+    super().__init__(args=[values], todims=todims)
 
-  def evalf(self, trans, depth):
-    depth, = depth
-    assert trans[depth-1].fromdims == self.todims
-    return trans[depth:]
+  def evalf(self, values):
+    return values[self.index]
 
 # ARRAYFUNC
 #
@@ -2892,9 +2890,9 @@ class Mask(Array):
     if self.axis not in (axis, rmaxis):
       return Mask(TakeDiag(self.func, axis, rmaxis), self.mask, self.axis-(rmaxis<self.axis))
 
-class FindTransform(Array):
+class FindTransform(Evaluable):
 
-  __slots__ = 'transforms', 'bits'
+  __slots__ = 'transforms', 'bits', 'tail_todims'
 
   @types.apply_annotations
   def __init__(self, transforms:tuple, trans:types.strict[TransformChain]):
@@ -2905,7 +2903,8 @@ class FindTransform(Array):
       bits.append(bit)
       bit <<= 1
     self.bits = numpy.array(bits[::-1])
-    super().__init__(args=[trans], shape=(), dtype=int)
+    self.tail_todims, = set(transform[-1].fromdims for transform in transforms)
+    super().__init__(args=[trans])
 
   def asdict(self, values):
     assert len(self.transforms) == len(values)
@@ -2919,9 +2918,27 @@ class FindTransform(Array):
       if i <= n and trans >= self.transforms[i-1]:
         index = i
     index -= 1
-    if index < 0 or trans[:len(self.transforms[index])] != self.transforms[index]:
+    if index < 0:
       raise IndexError('trans not found')
-    return numpy.array(index)[_]
+    match = self.transforms[index]
+    if trans[:len(match)] != match:
+      raise IndexError('trans not found')
+    return numpy.array(index)[_], trans[len(match):]
+
+  def __len__(self):
+    return 2
+
+  @property
+  def index(self):
+    return ArrayFromTuple(self, index=0, shape=(), dtype=int)
+
+  @property
+  def tail(self):
+    return TransformChainFromTuple(self, index=1, todims=self.tail_todims)
+
+  def __iter__(self):
+    yield self.index
+    yield self.tail
 
 class Range(Array):
 
@@ -3538,10 +3555,9 @@ def polyfunc(coeffs, dofs, ndofs, transforms, *, issorted=True):
     coeffs = tuple(coeffsmap[trans] for trans in transforms)
   fromdims, = set(transform[-1].fromdims for transform in transforms)
   promote = Promote(fromdims, trans=TRANS)
-  index = FindTransform(transforms, promote)
+  index, tail = FindTransform(transforms, promote)
   dofmap = DofMap(dofs, index=index)
-  depth = Get([len(trans) for trans in transforms], axis=0, item=index)
-  points = ApplyTransforms(TailOfTransform(promote, depth, fromdims))
+  points = ApplyTransforms(tail)
   func = Polyval(Elemwise(coeffs, index, dtype=float), points)
   return Inflate(func, dofmap, ndofs, axis=0)
 
@@ -3552,7 +3568,7 @@ def elemwise(fmap, shape, default=None):
   values = tuple(fmap[trans] for trans in transforms)
   fromdims, = set(transform[-1].fromdims for transform in transforms)
   promote = Promote(fromdims, trans=TRANS)
-  index = FindTransform(transforms, promote)
+  index, tail = FindTransform(transforms, promote)
   return Elemwise(values, index, dtype=float)
 
 def take(arg, index, axis):

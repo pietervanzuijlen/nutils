@@ -502,7 +502,7 @@ class Topology(types.Singleton):
     transforms = tuple(sorted(elem.transform for elem in self))
     values = types.frozenarray([int(trans in subtopo.edict) for trans in transforms])
     assert len(subtopo) == values.sum(0), '{} is not a proper subtopology of {}'.format(subtopo, self)
-    return function.Get(values, axis=0, item=function.FindTransform(transforms, function.Promote(self.ndims, trans=function.TRANS)))
+    return function.Get(values, axis=0, item=function.FindTransform(transforms, function.Promote(self.ndims, trans=function.TRANS)).index)
 
   def select(self, indicator, ischeme='bezier2', *, arguments=None):
     values = self.elem_eval(indicator, ischeme, separate=True, arguments=arguments)
