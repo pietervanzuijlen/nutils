@@ -193,7 +193,7 @@ class Topology(types.Singleton):
     'element-wise integration'
 
     transforms, ielems = zip(*sorted((elem.transform, ielem) for ielem, elem in enumerate(self)))
-    ielem = function.get(ielems, iax=0, item=function.FindTransform(transforms, function.TRANS))
+    ielem = function.get(ielems, iax=0, item=function.FindTransform(transforms, function.TRANS).index)
     with matrix.backend('numpy'):
       retvals = self.integrate([function.Inflate(function.asarray(func)[_], dofmap=ielem[_], length=len(self), axis=0) for func in funcs], **kwargs)
     retvals = [retval.export('dense') if len(retval.shape) == 2 else retval for retval in retvals]
@@ -707,7 +707,7 @@ class Topology(types.Singleton):
       nmap.append(types.frozenarray(ndofs + numpy.arange(len(elemcoeffs)), copy=False))
       ndofs += len(elemcoeffs)
     degrees = set(n-1 for c in coeffs for n in c.shape[1:])
-    return function.polyfunc(coeffs, nmap, ndofs, (elem.transform for elem in self), issorted=False)
+    return function.polyfunc(coeffs, nmap, ndofs, (elem.transform for elem in self))
 
   def _basis_c0_structured(self, name, degree):
     'C^0-continuous shape functions with lagrange stucture'
@@ -745,7 +745,7 @@ class Topology(types.Singleton):
 
     elem_slices = map(slice, offsets[:-1], offsets[1:])
     dofs = tuple(types.frozenarray(dofmap[s]) for s in elem_slices)
-    return function.polyfunc(coeffs, dofs, ndofs, (elem.transform for elem in self), issorted=False)
+    return function.polyfunc(coeffs, dofs, ndofs, (elem.transform for elem in self))
 
   def basis_lagrange(self, degree):
     'lagrange shape functions'
@@ -1039,7 +1039,7 @@ class StructuredLine(Topology):
         coeffs = coeffs[:p-1] + coeffs[p-1:p] * (nelems-2*(p-1)) + coeffs[p:]
     coeffs = types.frozenarray(coeffs, copy=False)
 
-    func = function.polyfunc(coeffs, dofs, ndofs, self._transforms[1:-1], issorted=False)
+    func = function.polyfunc(coeffs, dofs, ndofs, self._transforms[1:-1])
     if not removedofs:
       return func
 
@@ -1054,7 +1054,7 @@ class StructuredLine(Topology):
     coeffs = [ref.get_poly_coeffs('bernstein', degree=degree)]*len(self)
     ndofs = ref.get_ndofs(degree)
     dofs = types.frozenarray(numpy.arange(ndofs*len(self), dtype=int).reshape(len(self), ndofs), copy=False)
-    return function.polyfunc(coeffs, dofs, ndofs*len(self), self._transforms[1:-1], issorted=False)
+    return function.polyfunc(coeffs, dofs, ndofs*len(self), self._transforms[1:-1])
 
   def basis_std(self, degree, periodic=None, removedofs=None):
     'spline from vertices'
@@ -1073,7 +1073,7 @@ class StructuredLine(Topology):
     dofs = types.frozenarray(dofs, copy=False)
 
     coeffs = [element.LineReference().get_poly_coeffs('bernstein', degree=degree)]*len(self)
-    func = function.polyfunc(coeffs, dofs, ndofs, self._transforms[1:-1], issorted=False)
+    func = function.polyfunc(coeffs, dofs, ndofs, self._transforms[1:-1])
     if not removedofs:
       return func
 
@@ -1414,7 +1414,7 @@ class StructuredTopology(Topology):
       assert len(removedofs) == self.ndims
 
     coeffs, dofmap, dofshape = self._basis_spline(degree=degree, **kwargs)
-    func = function.polyfunc(coeffs, dofmap, util.product(dofshape), (elem.transform for elem in self), issorted=False)
+    func = function.polyfunc(coeffs, dofmap, util.product(dofshape), (elem.transform for elem in self))
     if not any(removedofs):
       return func
 
@@ -1469,7 +1469,7 @@ class StructuredTopology(Topology):
     coeffs = [ref.get_poly_coeffs('bernstein', degree=degree)]*len(self)
     ndofs = ref.get_ndofs(degree)
     dofs = types.frozenarray(numpy.arange(ndofs*len(self), dtype=int).reshape(len(self), ndofs), copy=False)
-    return function.polyfunc(coeffs, dofs, ndofs*len(self), (elem.transform for elem in self), issorted=False)
+    return function.polyfunc(coeffs, dofs, ndofs*len(self), (elem.transform for elem in self))
 
   def basis_std(self, degree, removedofs=None, periodic=None):
     'spline from vertices'
@@ -1504,7 +1504,7 @@ class StructuredTopology(Topology):
     lineref = element.LineReference()
     coeffs = [functools.reduce(numeric.poly_outer_product, (lineref.get_poly_coeffs('bernstein', degree=p) for p in degree))]*len(self)
     dofs = [types.frozenarray(vertex_structure[S].ravel(), copy=False) for S in numpy.broadcast(*numpy.ix_(*slices))]
-    func = function.polyfunc(coeffs, dofs, numpy.product(dofshape), self._transform.ravel(), issorted=False)
+    func = function.polyfunc(coeffs, dofs, numpy.product(dofshape), self._transform.ravel())
     if not any(removedofs):
       return func
 
@@ -1603,7 +1603,7 @@ class SimplexTopology(Topology):
     nverts = self.simplices.max() + 1
     ndofs = nverts + len(self)
     nmap = [types.frozenarray(numpy.hstack([idofs, nverts+ielem]), copy=False) for ielem, idofs in enumerate(self.simplices)]
-    return function.polyfunc([coeffs] * len(self), nmap, ndofs, self.transforms, issorted=False)
+    return function.polyfunc([coeffs] * len(self), nmap, ndofs, self.transforms)
 
 class UnionTopology(Topology):
   'grouped topology'
@@ -2084,7 +2084,7 @@ class HierarchicalTopology(Topology):
       hbasis_dofs.append(numpy.concatenate(trans_dofs))
       hbasis_coeffs.append(numeric.poly_concatenate(trans_coeffs))
 
-    return function.polyfunc(hbasis_coeffs, hbasis_dofs, ndofs, hbasis_transforms, issorted=True)
+    return function.polyfunc(hbasis_coeffs, hbasis_dofs, ndofs, hbasis_transforms)
 
 class ProductTopology(Topology):
   'product topology'
@@ -2366,7 +2366,7 @@ class MultipatchTopology(Topology):
       dofmap = tuple(types.frozenarray(tuple(renumber[merge.get(dof, dof)] for dof in v.flat), dtype=int).reshape(v.shape) for v in dofmap)
       dofcount = len(remainder)
 
-    return function.polyfunc(coeffs, dofmap, dofcount, transforms, issorted=False)
+    return function.polyfunc(coeffs, dofmap, dofcount, transforms)
 
   def basis_discont(self, degree):
     'discontinuous shape functions'
@@ -2393,7 +2393,7 @@ class MultipatchTopology(Topology):
         coeffs.append(elem_coeffs)
         dofs.append(types.frozenarray(ndofs+elem_dofs, copy=False))
       ndofs += len(basis)
-    return function.polyfunc(coeffs, dofs, ndofs, (elem.transform for patch in self.patches for elem in patch.topo), issorted=False)
+    return function.polyfunc(coeffs, dofs, ndofs, (elem.transform for patch in self.patches for elem in patch.topo))
 
   def basis_patch(self):
     'degree zero patchwise discontinuous basis'
@@ -2401,7 +2401,7 @@ class MultipatchTopology(Topology):
     npatches = len(self.patches)
     coeffs = [types.frozenarray(1, dtype=int).reshape(1, *(1,)*self.ndims)]*npatches
     dofs = types.frozenarray(range(npatches), dtype=int)[:,_]
-    return function.polyfunc(coeffs, dofs, npatches, ((patch.topo.root,) for patch in self.patches), issorted=False)
+    return function.polyfunc(coeffs, dofs, npatches, ((patch.topo.root,) for patch in self.patches))
 
   @property
   def boundary(self):

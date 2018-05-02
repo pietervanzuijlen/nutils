@@ -516,7 +516,7 @@ def gmsh(fname, name='gmsh'):
   else:
     coeffs = element.getsimplex(ndims).get_poly_coeffs('lagrange', degree=degree)
     transforms = [elem.transform for elem in topo]
-    basis = function.polyfunc([coeffs] * len(fullgeomdofs), fullgeomdofs, len(nodes), transforms, issorted=False)
+    basis = function.polyfunc([coeffs] * len(fullgeomdofs), fullgeomdofs, len(nodes), transforms)
     geom = (basis[:,_] * nodes).sum(0)
 
   return topo, geom

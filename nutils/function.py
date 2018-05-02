@@ -2892,17 +2892,18 @@ class Mask(Array):
 
 class FindTransform(Evaluable):
 
-  __slots__ = 'transforms', 'bits', 'tail_todims'
+  __slots__ = 'transforms', 'tail_todims', 'sorted', 'index_map'
 
   @types.apply_annotations
   def __init__(self, transforms:tuple, trans:types.strict[TransformChain]):
     self.transforms = transforms
-    bits = []
-    bit = 1
-    while bit <= len(transforms):
-      bits.append(bit)
-      bit <<= 1
-    self.bits = numpy.array(bits[::-1])
+
+    self.sorted = numpy.empty((len(transforms),), dtype=object)
+    for i, transform in enumerate(self.transforms):
+      self.sorted[i] = tuple(map(id, transform))
+    self.index_map = numpy.argsort(self.sorted)
+    self.sorted = self.sorted[self.index_map]
+
     self.tail_todims, = set(transform[-1].fromdims for transform in transforms)
     super().__init__(args=[trans])
 
@@ -2911,19 +2912,15 @@ class FindTransform(Evaluable):
     return dict(zip(self.transforms, values))
 
   def evalf(self, trans):
-    n = len(self.transforms)
-    index = 0
-    for bit in self.bits:
-      i = index|bit
-      if i <= n and trans >= self.transforms[i-1]:
-        index = i
-    index -= 1
-    if index < 0:
+    transid_array = numpy.empty((), dtype=object)
+    transid_array[()] = transid = tuple(map(id, trans))
+    i = numpy.searchsorted(self.sorted, transid_array, side='right') - 1
+    if i < 0:
       raise IndexError('trans not found')
-    match = self.transforms[index]
-    if trans[:len(match)] != match:
+    match = self.sorted[i]
+    if transid[:len(match)] != match:
       raise IndexError('trans not found')
-    return numpy.array(index)[_], trans[len(match):]
+    return self.index_map[i,_], trans[len(match):]
 
   def __len__(self):
     return 2
@@ -3535,24 +3532,14 @@ def eig(arg, axes=(-2,-1), symmetric=False):
   eigval, eigvec = Eig(transposed, symmetric)
   return Tuple([transpose(diagonalize(eigval), _invtrans(trans)), transpose(eigvec, _invtrans(trans))])
 
-def polyfunc(coeffs, dofs, ndofs, transforms, *, issorted=True):
+@types.apply_annotations
+def polyfunc(coeffs:types.tuple[types.frozenarray], dofs:types.tuple[types.frozenarray], ndofs:types.strictint, transforms:types.tuple[transform.stricttransform]):
   '''
   Create an inflated :class:`Polyval` with coefficients ``coeffs`` and
   corresponding dofs ``dofs``.  The arguments ``coeffs``, ``dofs`` and
-  ``transforms`` are assumed to have matching order.  In addition, if
-  ``issorted`` is true, the ``transforms`` argument is assumed to be sorted.
+  ``transforms`` are assumed to have matching order.
   '''
 
-  transforms = tuple(transforms)
-  if issorted:
-    dofs = tuple(dofs)
-    coeffs = tuple(coeffs)
-  else:
-    dofsmap = dict(zip(transforms, dofs))
-    coeffsmap = dict(zip(transforms, coeffs))
-    transforms = tuple(sorted(transforms))
-    dofs = tuple(dofsmap[trans] for trans in transforms)
-    coeffs = tuple(coeffsmap[trans] for trans in transforms)
   fromdims, = set(transform[-1].fromdims for transform in transforms)
   promote = Promote(fromdims, trans=TRANS)
   index, tail = FindTransform(transforms, promote)
