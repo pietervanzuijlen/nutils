@@ -40,11 +40,72 @@ import functools, collections.abc, itertools, functools, operator, numbers, path
 
 _identity = lambda x: x
 
+class TransformsTuple(types.Singleton):
+
+  __slots__ = '_transforms', '_sorted', '_indices', '_fromdims'
+
+  @types.apply_annotations
+  def __init__(self, transforms:types.tuple[transform.stricttransform], fromdims:types.strictint):
+    assert all(trans[-1].fromdims == fromdims for trans in transforms)
+    self._transforms = transforms
+    self._sorted = numpy.empty([len(self._transforms)], dtype=object)
+    for i, trans in enumerate(self._transforms):
+      self._sorted[i] = tuple(map(id, trans))
+    self._indices = numpy.argsort(self._sorted)
+    self._sorted = self._sorted[self._indices]
+    self._fromdims = fromdims
+    super().__init__()
+
+  def __iter__(self):
+    return iter(self._transforms)
+
+  def __getitem__(self, item):
+    return self._transforms[item]
+
+  def __len__(self):
+    return len(self._transforms)
+
+  def index(self, trans):
+    index, tail = self.index_with_tail(trans)
+    if tail:
+      raise ValueError
+    return index
+
+  def index_with_tail(self, trans):
+    head, tail = transform.promote(trans, self._fromdims)
+    headid_array = numpy.empty((), dtype=object)
+    headid_array[()] = headid = tuple(map(id, head))
+    i = numpy.searchsorted(self._sorted, headid_array, side='right') - 1
+    if i < 0:
+      raise ValueError
+    match = self._sorted[i]
+    if headid[:len(match)] != match:
+      raise ValueError
+    return self._indices[i], head[len(match):] + tail
+
+  def contains(self, trans):
+    try:
+      self.index(trans)
+    except ValueError:
+      return False
+    else:
+      return True
+
+  __contains__ = contains
+
+  def contains_with_tail(self, trans):
+    try:
+      self.index_with_tail(trans)
+    except ValueError:
+      return False
+    else:
+      return True
+
 class Topology(types.Singleton):
   'topology base class'
 
   __slots__ = 'ndims',
-  __cache__ ='edict', 'border_transforms', 'simplex', 'boundary', 'interfaces'
+  __cache__ = 'border_transforms', 'simplex', 'boundary', 'interfaces', 'references', 'transforms', 'opposites'
 
   # subclass needs to implement: .elements
 
@@ -64,6 +125,18 @@ class Topology(types.Singleton):
 
   def __iter__(self):
     return iter(self.elements)
+
+  @property
+  def references(self):
+    return tuple(elem.reference for elem in self.elements)
+
+  @property
+  def transforms(self):
+    return TransformsTuple(tuple(elem.transform for elem in self.elements), self.ndims)
+
+  @property
+  def opposites(self):
+    return TransformsTuple(tuple(elem.opposite for elem in self.elements), self.ndims)
 
   def getitem(self, item):
     return EmptyTopology(self.ndims)
@@ -115,8 +188,11 @@ class Topology(types.Singleton):
     return self | other
 
   def __contains__(self, element):
-    ielem = self.edict.get(element.transform)
-    return ielem is not None and self.elements[ielem] == element
+    try:
+      ielem = self.transforms.index(element.transform)
+    except ValueError:
+      return False
+    return self.references[ielem] == element.reference and self.opposites[ielem] == element.opposite
 
   def __sub__(self, other):
     assert isinstance(other, Topology) and other.ndims == self.ndims
@@ -130,21 +206,16 @@ class Topology(types.Singleton):
     return ProductTopology(self, other)
 
   @property
-  def edict(self):
-    '''transform -> ielement mapping'''
-    return {elem.transform: ielem for ielem, elem in enumerate(self)}
-
-  @property
   def border_transforms(self):
-    border_transforms = set()
+    indices = set()
     for belem in self.boundary:
       try:
-        ielem, tail = transform.lookup_item(belem.transform, self.edict)
-      except KeyError:
+        ielem, tail = self.transforms.index_with_tail(belem.transform)
+      except ValueError:
         pass
       else:
-        border_transforms.add(self.elements[ielem].transform)
-    return border_transforms
+        indices.add(ielem)
+    return TransformsTuple(tuple(self.transforms[ielem] for ielem in sorted(indices)), self.ndims)
 
   @property
   def refine_iter(self):
@@ -167,8 +238,8 @@ class Topology(types.Singleton):
   def sample(self, ischeme, degree):
     'Create sample.'
 
-    transforms = [(elem.transform, elem.opposite) for elem in self]
-    points = [elem.reference.getpoints(ischeme, degree) for elem in self]
+    transforms = tuple(zip(self.transforms, self.opposites))
+    points = tuple(ref.getpoints(ischeme, degree) for ref in self.references)
     offset = numpy.cumsum([0] + [p.npoints for p in points])
     return sample.Sample(transforms, points, map(numpy.arange, offset[:-1], offset[1:]))
 
@@ -197,7 +268,7 @@ class Topology(types.Singleton):
     with matrix.backend('numpy'):
       retvals = self.integrate([function.Inflate(function.asarray(func)[_], dofmap=ielem[_], length=len(self), axis=0) for func in funcs], **kwargs)
     retvals = [retval.export('dense') if len(retval.shape) == 2 else retval for retval in retvals]
-    return [function.elemwise((elem.transform for elem in self), retval, shape=retval.shape[1:]) for retval in retvals] if asfunction \
+    return [function.elemwise(self.transforms, retval, shape=retval.shape[1:]) for retval in retvals] if asfunction \
       else retvals
 
   @util.single_or_multiple
@@ -383,8 +454,8 @@ class Topology(types.Singleton):
     else:
       log.info('collecting leveltopo elements')
       bins = [[] for ielem in range(len(self))]
-      for elem in leveltopo:
-        ielem, tail = transform.lookup_item(elem.transform, self.edict)
+      for trans in leveltopo.transforms:
+        ielem, tail = self.transforms.index_with_tail(trans)
         bins[ielem].append(tail)
       refs = []
       for elem, ctransforms in log.zip('elem', self, bins):
@@ -406,8 +477,8 @@ class Topology(types.Singleton):
     refs = [elem.reference.empty for elem in self]
     for elem in elements:
       try:
-        ielem = self.edict[elem.transform]
-      except KeyError:
+        ielem = self.transforms.index(elem.transform)
+      except ValueError:
         assert not strict, 'elements do not form a strict subset'
       else:
         ref = self.elements[ielem].reference & elem.reference
@@ -500,7 +571,7 @@ class Topology(types.Singleton):
     if isinstance(subtopo, str):
       subtopo = self[subtopo]
     transforms = tuple(sorted(elem.transform for elem in self))
-    values = types.frozenarray([int(trans in subtopo.edict) for trans in transforms])
+    values = types.frozenarray([int(trans in subtopo.transforms) for trans in transforms])
     assert len(subtopo) == values.sum(0), '{} is not a proper subtopology of {}'.format(subtopo, self)
     return function.Get(values, axis=0, item=function.FindTransform(transforms, function.Promote(self.ndims, trans=function.TRANS)).index)
 
@@ -777,7 +848,7 @@ class WithGroupsTopology(Topology):
     self.igroups = igroups
     self.pgroups = pgroups
     super().__init__(basetopo.ndims)
-    assert all(topo is Ellipsis or isinstance(topo, str) or isinstance(topo, Topology) and topo.ndims == basetopo.ndims and set(self.basetopo.edict).issuperset(topo.edict) for topo in self.vgroups.values())
+    assert all(topo is Ellipsis or isinstance(topo, str) or isinstance(topo, Topology) and topo.ndims == basetopo.ndims and set(self.basetopo.transforms).issuperset(topo.transforms) for topo in self.vgroups.values())
 
   def withgroups(self, vgroups={}, bgroups={}, igroups={}, pgroups={}):
     args = []
@@ -804,10 +875,6 @@ class WithGroupsTopology(Topology):
       return itemtopo if isinstance(itemtopo, Topology) else self.basetopo[itemtopo]
 
   @property
-  def edict(self):
-    return self.basetopo.edict
-
-  @property
   def border_transforms(self):
     return self.basetopo.border_transforms
 
@@ -831,7 +898,7 @@ class WithGroupsTopology(Topology):
   def interfaces(self):
     baseitopo = self.basetopo.interfaces
     # last minute orientation fix
-    igroups = {name: UnstructuredTopology(self.ndims-1, [elem if elem.transform in baseitopo.edict else elem.flipped for elem in elems]) for name, elems in self.igroups.items()}
+    igroups = {name: UnstructuredTopology(self.ndims-1, [elem if elem.transform in baseitopo.transforms else elem.flipped for elem in elems]) for name, elems in self.igroups.items()}
     return baseitopo.withgroups(igroups)
 
   @property
@@ -1718,8 +1785,8 @@ class SubsetTopology(Topology):
     trimmed = []
     for belem in super().boundary:
       try:
-        ibelem = baseboundary.edict[belem.transform]
-      except KeyError:
+        ibelem = baseboundary.transforms.index(belem.transform)
+      except ValueError:
         trimmed.append(belem)
       else:
         brefs[ibelem] = belem.reference
@@ -1727,7 +1794,7 @@ class SubsetTopology(Topology):
     if isinstance(self.newboundary, Topology):
       trimmedbrefs = [belem.reference.empty for belem in self.newboundary]
       for belem in trimmed:
-        trimmedbrefs[self.newboundary.edict[belem.transform]] = belem.reference
+        trimmedbrefs[self.newboundary.transforms.index(belem.transform)] = belem.reference
       trimboundary = SubsetTopology(self.newboundary, trimmedbrefs)
     else:
       trimboundary = OrientedGroupsTopology(self.basetopo.interfaces, trimmed)
@@ -1739,9 +1806,9 @@ class SubsetTopology(Topology):
     irefs = [ielem.reference.empty for ielem in baseinterfaces]
     for ielem in super().interfaces:
       try:
-        iielem = baseinterfaces.edict[ielem.transform]
-      except KeyError:
-        iielem = baseinterfaces.edict[ielem.opposite]
+        iielem = baseinterfaces.transforms.index(ielem.transform)
+      except ValueError:
+        iielem = baseinterfaces.transforms.index(ielem.opposite)
       irefs[iielem] = ielem.reference
     return SubsetTopology(baseinterfaces, irefs)
 
@@ -1766,12 +1833,12 @@ class OrientedGroupsTopology(UnstructuredTopology):
     elements = []
     for elem in self.basetopo.getitem(item):
       try:
-        ielem, tail = transform.lookup_item(elem.transform, self.edict)
-      except KeyError:
+        ielem, tail = self.transforms.index_with_tail(elem.transform)
+      except ValueError:
         elem = elem.flipped
         try:
-          ielem, tail = transform.lookup_item(elem.transform, self.edict)
-        except KeyError:
+          ielem, tail = self.transforms.index_with_tail(elem.transform)
+        except ValueError:
           continue
       if tail:
         raise NotImplementedError
@@ -1846,8 +1913,8 @@ class HierarchicalTopology(Topology):
     itemelems = []
     for elem in self.allelements:
       try:
-        ielem, tail = transform.lookup_item(elem.transform, self.basetopo.edict)
-      except KeyError:
+        ielem, tail = self.basetopo.transforms.index_with_tail(elem.transform)
+      except ValueError:
         continue
       itemelem = self.basetopo.elements[ielem]
       ref = itemelem.reference
@@ -1868,14 +1935,14 @@ class HierarchicalTopology(Topology):
     levels = [self.basetopo]
     for elem in self:
       try:
-        ielem, tail = transform.lookup_item(elem.transform, self.basetopo.edict)
-      except KeyError:
+        ielem, tail = self.basetopo.transforms.index_with_tail(elem.transform)
+      except ValueError:
         raise Exception('element is not a refinement of basetopo')
       else:
         nrefine = len(tail)
         while nrefine >= len(levels):
           levels.append(levels[-1].refined)
-        assert elem.transform in levels[nrefine].edict, 'element is not a refinement of basetopo'
+        assert elem.transform in levels[nrefine].transforms, 'element is not a refinement of basetopo'
     return tuple(levels)
 
   @property
@@ -1889,12 +1956,12 @@ class HierarchicalTopology(Topology):
     'boundary elements'
 
     basebtopo = self.basetopo.boundary
-    edgepool = [edge for elem in self if transform.lookup(elem.transform, self.basetopo.border_transforms) for edge in elem.edges if edge is not None]
+    edgepool = [edge for elem in self if self.basetopo.border_transforms.contains_with_tail(elem.transform) for edge in elem.edges if edge is not None]
     belems = []
     for edge in edgepool: # superset of boundary elements
       try:
-        iedge, tail = transform.lookup_item(edge.transform, basebtopo.edict)
-      except KeyError:
+        iedge, tail = basebtopo.transforms.index_with_tail(edge.transform)
+      except ValueError:
         pass
       else:
         opptrans = basebtopo.elements[iedge].opposite + tail
@@ -1913,7 +1980,6 @@ class HierarchicalTopology(Topology):
       for ilevel, level in enumerate(self.levels)
       for ielem, elem in enumerate(level)
     }
-    edict = self.edict
     interfaces = []
     for elem in log.iter('elem', self):
       # Get `level`, element number at `level` of `elem`.
@@ -1926,8 +1992,9 @@ class HierarchicalTopology(Topology):
           continue
         neighbor = level.elements[ineighbor]
         # Lookup `neighbor` (from the same `level` as `elem`) in this topology.
-        head, tail = transform.lookup(neighbor.transform, edict) or (None, None)
-        if not head:
+        try:
+          ignored, tail = self.transforms.index_with_tail(neighbor.transform)
+        except ValueError:
           # `neighbor` not found, hence refinements of `neighbor` are present.
           # The interface of this edge will be added when we encounter the
           # refined elements.
@@ -2012,13 +2079,13 @@ class HierarchicalTopology(Topology):
       ((ubasis_dofmap,), ubasis_func), = function.blocks(ubasis)
       ubasis_dofscoeffs.append(function.Tuple((ubasis_dofmap, ubasis_func.coeffs)))
       on_current, on_coarser = on_ = numpy.zeros((2, len(ubasis)), dtype=bool)
-      for elem in ltopo:
-        trans = elem.transform
-        lookup = transform.lookup(trans, self.edict)
-        if lookup:
-          ubasis_idofs, = ubasis_dofmap.eval(_transforms=(trans,))
-          head, tail = lookup
-          on_[1 if tail else 0, ubasis_idofs] = True
+      for trans in ltopo.transforms:
+        try:
+          ielem, tail = self.transforms.index_with_tail(trans)
+        except ValueError:
+          continue
+        ubasis_idofs, = ubasis_dofmap.eval(_transforms=(trans,))
+        on_[1 if tail else 0, ubasis_idofs] = True
       ubasis_active.append((on_current & ~on_coarser))
       ubasis_passive.append(on_coarser)
 
@@ -2031,14 +2098,14 @@ class HierarchicalTopology(Topology):
       ndofs = r[-1]+1
 
     # 3. construct hierarchical polynomials
-    hbasis_transforms = tuple(sorted(elem.transform for elem in self))
+    hbasis_transforms = self.transforms
     hbasis_dofs = []
     hbasis_coeffs = []
     projectcache = {}
 
     for hbasis_trans in hbasis_transforms:
 
-      head, tail = transform.lookup(hbasis_trans, self.basetopo.edict) # len(tail) == level of the hierarchical element
+      ielem, tail = self.basetopo.transforms.index_with_tail(hbasis_trans) # len(tail) == level of the hierarchical element
       trans_dofs = []
       trans_coeffs = []
 
