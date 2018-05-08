@@ -48,6 +48,18 @@ def gather(items):
     values.append(value)
   return gathered
 
+def pairwise(src, *, periodic=False):
+  src = iter(src)
+  try:
+    first = a = next(src)
+  except StopIteration:
+    return
+  for b in src:
+    yield a, b
+    a = b
+  if periodic:
+    yield a, first
+
 def allequal(seq1, seq2):
   seq1 = iter(seq1)
   seq2 = iter(seq2)

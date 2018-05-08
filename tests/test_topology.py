@@ -153,19 +153,19 @@ class common_refine(TestCase):
     dom, geom = mesh.rectilinear([[0,1,2],[0,1,2]])
     doms, funs, vals = {}, {}, {}
 
-    doms['1'] = dom.refined_by(list(dom)[:1])
+    doms['1'] = dom.refined_by(list(dom.transforms)[:1])
     funs['1'] = doms['1'].basis('th-std', degree=1)
     vals['1'] = 0.375,0.25,0.375,0.9375,0.5,0.25,0.5,0.25,0.0625,0.125,0.125,0.25
 
-    doms['234'] = dom.refined_by(list(dom)[1:])
+    doms['234'] = dom.refined_by(list(dom.transforms)[1:])
     funs['234'] = doms['234'].basis('th-std', degree=1)
     vals['234'] = 0.25,0.375,0.375,0.5625,0.125,0.0625,0.25,0.125,0.25,0.125,0.125,0.25,0.25,0.25,0.125,0.0625,0.125,0.125,0.125,0.0625
 
-    doms['123'] = dom.refined_by(list(dom)[:-1])
+    doms['123'] = dom.refined_by(list(dom.transforms)[:-1])
     funs['123'] = doms['123'].basis('th-std', degree=1)
     vals['123'] = 0.5625,0.375,0.375,0.25,0.0625,0.125,0.125,0.125,0.0625,0.125,0.25,0.25,0.25,0.125,0.125,0.25,0.125,0.25,0.0625,0.125
 
-    doms['4'] = dom.refined_by(list(dom)[-1:])
+    doms['4'] = dom.refined_by(list(dom.transforms)[-1:])
     funs['4'] = doms['4'].basis('th-std', degree=1)
     vals['4'] = 0.25,0.5,0.25,0.5,0.9375,0.375,0.25,0.375,0.25,0.125,0.125,0.0625
 
@@ -254,7 +254,7 @@ class general(TestCase):
     super().setUp()
     self.domain, self.geom = mesh.rectilinear([3,4,5], periodic=[] if self.periodic is False else [self.periodic])
     if not self.isstructured:
-      self.domain = topology.ConnectedTopology(self.domain.ndims, self.domain.elements, self.domain.connectivity)
+      self.domain = topology.ConnectedTopology(self.domain.ndims, self.domain.references, self.domain.transforms, self.domain.opposites, self.domain.connectivity)
 
   def test_connectivity(self):
     nboundaries = 0
@@ -265,28 +265,29 @@ class general(TestCase):
           nboundaries += 1
         else:
           ioppedge = tuple(self.domain.connectivity[ioppelem]).index(ielem)
-          edge = self.domain.elements[ielem].edge(iedge)
-          oppedge = self.domain.elements[ioppelem].edge(ioppedge)
-          self.assertEqual(edge.reference, oppedge.reference)
+          edgeref = self.domain.references[ielem].edge_refs[iedge]
+          oppedgeref = self.domain.references[ioppelem].edge_refs[ioppedge]
+          self.assertEqual(edgeref, oppedgeref)
           ninterfaces += .5
     self.assertEqual(nboundaries, len(self.domain.boundary), 'incompatible number of boundaries')
     self.assertEqual(ninterfaces, len(self.domain.interfaces), 'incompatible number of interfaces')
 
   def test_boundary(self):
-    for elem in self.domain.boundary:
-      ielem, tail = self.domain.transforms.index_with_tail(elem.transform)
+    for trans in self.domain.boundary.transforms:
+      ielem, tail = self.domain.transforms.index_with_tail(trans)
       etrans, = tail
-      iedge = self.domain.elements[ielem].reference.edge_transforms.index(etrans)
+      iedge = self.domain.references[ielem].edge_transforms.index(etrans)
       self.assertEqual(self.domain.connectivity[ielem][iedge], -1)
 
   def test_interfaces(self):
-    for elem in self.domain.interfaces:
-      ielem, tail = self.domain.transforms.index_with_tail(elem.transform)
+    itopo = self.domain.interfaces
+    for trans, opptrans in zip(itopo.transforms, itopo.opposites):
+      ielem, tail = self.domain.transforms.index_with_tail(trans)
       etrans, = tail
-      iedge = self.domain.elements[ielem].reference.edge_transforms.index(etrans)
-      ioppelem, opptail = self.domain.transforms.index_with_tail(elem.opposite)
+      iedge = self.domain.references[ielem].edge_transforms.index(etrans)
+      ioppelem, opptail = self.domain.transforms.index_with_tail(opptrans)
       eopptrans, = opptail
-      ioppedge = self.domain.elements[ioppelem].reference.edge_transforms.index(eopptrans)
+      ioppedge = self.domain.references[ioppelem].edge_transforms.index(eopptrans)
       self.assertEqual(self.domain.connectivity[ielem][iedge], ioppelem)
       self.assertEqual(self.domain.connectivity[ioppelem][ioppedge], ielem)
 
@@ -322,7 +323,7 @@ class hierarchical(TestCase):
     # Refine `self.domain` near `self.pos`.
     distance = ((self.geom-self.pos)**2).sum(0)**0.5
     for threshold in 0.3, 0.15:
-      self.domain = self.domain.refined_by(elem for elem, value in zip(self.domain, self.domain.elem_mean([distance], ischeme='gauss1', geometry=self.geom)[0]) if value <= threshold)
+      self.domain = self.domain.refined_by(trans for trans, value in zip(self.domain.transforms, self.domain.elem_mean([distance], ischeme='gauss1', geometry=self.geom)[0]) if value <= threshold)
 
   @parametrize.enable_if(lambda periodic, **params: not periodic)
   def test_boundaries(self):

@@ -462,40 +462,42 @@ def gmsh(fname, name='gmsh'):
   log.info('created topology consisting of {} elements'.format(len(topo)))
 
   if tagnamesbydim[ndims-1]: # separate boundary and interface elements by tag
+    elemref = element.getsimplex(ndims)
+    edgeref = element.getsimplex(ndims-1)
     edges = {}
-    for elem, vtx in zip(topo, inodesbydim[ndims].tolist()):
-      for iedge, edge in enumerate(elem.edges):
-        edges.setdefault(tuple(vtx[:iedge] + vtx[iedge+1:]), []).append(edge)
+    for elemtrans, vtx in zip(topo.transforms, inodesbydim[ndims].tolist()):
+      for iedge, edgetrans in enumerate(elemref.edge_transforms):
+        edges.setdefault(tuple(vtx[:iedge] + vtx[iedge+1:]), []).append(elemtrans+(edgetrans,))
     tagsbelems = {}
     tagsielems = {}
     for name, ibelems in tagnamesbydim[ndims-1].items():
       for ibelem in ibelems:
         edge, *oppedge = edges[tuple(inodesbydim[ndims-1][ibelem])]
         if oppedge:
-          tagsielems.setdefault(name, []).append(edge.withopposite(*oppedge))
+          tagsielems.setdefault(name, []).append((edge, oppedge[0]))
         else:
           tagsbelems.setdefault(name, []).append(edge)
     if tagsbelems:
-      topo = topo.withgroups(bgroups={tagname: topology.UnstructuredTopology(ndims-1, tagbelems) for tagname, tagbelems in tagsbelems.items()})
+      topo = topo.withgroups(bgroups={tagname: topology.UnstructuredTopology(ndims-1, (edgeref,)*len(tagbelems), tagbelems, tagbelems) for tagname, tagbelems in tagsbelems.items()})
       log.info('boundary groups:', ', '.join('{} (#{})'.format(n, len(e)) for n, e in tagsbelems.items()))
     if tagsielems:
-      topo = topo.withgroups(igroups={tagname: topology.UnstructuredTopology(ndims-1, tagielems) for tagname, tagielems in tagsielems.items()})
+      topo = topo.withgroups(igroups={tagname: topology.UnstructuredTopology(ndims-1, (edgeref,)*len(tagielems), (trans for trans, opp in tagielems), (opp for trans, opp in tagielems)) for tagname, tagielems in tagsielems.items()})
       log.info('interface groups:', ', '.join('{} (#{})'.format(n, len(e)) for n, e in tagsielems.items()))
 
   if tagnamesbydim[0]: # create points topology and separate by tag
-    pelems = {inodes[0]: [] for inodes in inodesbydim[0]}
+    ptransforms = {inodes[0]: [] for inodes in inodesbydim[0]}
     pref = element.getsimplex(0)
-    for elem, inodes in zip(topo, inodesbydim[ndims]):
+    for ref, trans, inodes in zip(topo.references, topo.transforms, inodesbydim[ndims]):
       for ivertex, inode in enumerate(inodes):
-        if inode in pelems:
-          offset = elem.reference.vertices[ivertex]
-          trans = elem.transform + (transform.Matrix(linear=numpy.zeros(shape=(ndims,0)), offset=offset),)
-          pelems[inode].append(element.Element(pref, trans))
-    tagspelems = {}
+        if inode in ptransforms:
+          offset = ref.vertices[ivertex]
+          ptransforms[inode].append(trans + (transform.Matrix(linear=numpy.zeros(shape=(ndims,0)), offset=offset),))
+    pgroups = {}
     for name, ipelems in tagnamesbydim[0].items():
-      tagspelems[name] = [pelem for ipelem in ipelems for inode in inodesbydim[0][ipelem] for pelem in pelems[inode]]
-    topo = topo.withgroups(pgroups={tagname: topology.UnstructuredTopology(0, tagpelems) for tagname, tagpelems in tagspelems.items()})
-    log.info('point groups:', ', '.join('{} (#{})'.format(n, len(e)) for n, e in tagspelems.items()))
+      tagptransforms = tuple(ptrans for ipelem in ipelems for inode in inodesbydim[0][ipelem] for ptrans in ptransforms[inode])
+      pgroups[name] = topology.UnstructuredTopology(0, (pref,)*len(tagptransforms), tagptransforms, tagptransforms)
+    topo = topo.withgroups(pgroups=pgroups)
+    log.info('point groups:', ', '.join('{} (#{})'.format(n, len(e)) for n, e in pgroups.items()))
 
   if tagnamesbydim[ndims]: # create volume groups
     vgroups = {}
@@ -515,8 +517,7 @@ def gmsh(fname, name='gmsh'):
     geom = function.rootcoords(ndims)
   else:
     coeffs = element.getsimplex(ndims).get_poly_coeffs('lagrange', degree=degree)
-    transforms = [elem.transform for elem in topo]
-    basis = function.polyfunc([coeffs] * len(fullgeomdofs), fullgeomdofs, len(nodes), transforms)
+    basis = function.polyfunc([coeffs] * len(fullgeomdofs), fullgeomdofs, len(nodes), topo.transforms)
     geom = (basis[:,_] * nodes).sum(0)
 
   return topo, geom
@@ -547,8 +548,10 @@ def demo(xmin=0, xmax=1, ymin=0, ymax=1):
   simplices = numpy.sort([[12+(i-i//3)%8, i, (i+1)%12] for i in range(12)] + [[i+1+(i//2), 12+(i+1)%8, 12+i] for i in range(8)] + [[20, 12+i, 12+(i+1)%8] for i in range(8)], axis=1)
   root = transform.Identifier(2, 'demo')
   topo = topology.SimplexTopology(simplices, [(root, transform.Simplex(c)) for c in coords[simplices]])
-  belems = [elem.edge(2) for elem in topo.elements[:12]]
-  topo = topo.withboundary(**{name: topology.UnstructuredTopology(1, subbelems) for name, subbelems in (('top',belems[0:3]), ('left',belems[3:6]), ('bottom',belems[6:9]), ('right',belems[9:12]))})
+  elemref = element.getsimplex(2)
+  edgeref = element.getsimplex(1)
+  btransforms = [trans+(elemref.edge_transforms[2],) for trans in topo.transforms]
+  topo = topo.withboundary(**{name: topology.UnstructuredTopology(1, (edgeref,)*len(subbtransforms), subbtransforms, subbtransforms) for name, subbtransforms in (('top',btransforms[0:3]), ('left',btransforms[3:6]), ('bottom',btransforms[6:9]), ('right',btransforms[9:12]))})
   return topo, function.rootcoords(2)
 
 # vim:shiftwidth=2:softtabstop=2:expandtab:foldmethod=indent:foldnestmax=1

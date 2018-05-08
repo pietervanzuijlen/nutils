@@ -526,6 +526,7 @@ class Identifier(TransformItem):
 
   @types.apply_annotations
   def __init__(self, ndims:int, *args):
+    assert all(not isinstance(arg, Identifier) for arg in args)
     super().__init__(None, ndims)
 
 # vim:shiftwidth=2:softtabstop=2:expandtab:foldmethod=indent:foldnestmax=2

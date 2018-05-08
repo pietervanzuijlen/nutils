@@ -114,7 +114,7 @@ def main(
       domain = domain.refined
     else:
       mask = error_est_w**2 > numpy.mean(error_est_w**2)
-      domain = domain.refined_by(elem.transform[:-1] for elem in domain.refined.supp(finebasis, mask))
+      domain = domain.refined_by(trans[:-1] for trans in domain.refined.supp(finebasis, mask).transforms)
 
   return lhsprimal, error_est_w
 
