@@ -882,10 +882,6 @@ class WithGroupsTopology(Topology):
     return self.basetopo.connectivity
 
   @property
-  def structure(self):
-    return self.basetopo.structure
-
-  @property
   def references(self):
     return self.basetopo.references
 
@@ -1286,12 +1282,6 @@ class StructuredTopology(Topology):
       return self.transforms
     axes = [BndAxis(axis.i, axis.j, axis.ibound, not axis.side) if not axis.isdim and axis.ibound==nbounds-1 else axis for axis in self.axes]
     return self.mktransforms(axes, self.root, self.nrefine)
-
-  @property
-  def structure(self):
-    warnings.deprecation('topology.structure will be removed in future')
-    reference = util.product(element.getsimplex(1 if axis.isdim else 0) for axis in self.axes)
-    return numeric.asobjvector(element.Element(reference, trans, opp) for trans, opp in zip(self.transforms, self.opposites)).reshape(self.shape)
 
   @property
   def connectivity(self):
@@ -2185,7 +2175,7 @@ class ProductTopology(Topology):
   'product topology'
 
   __slots__ = 'topo1', 'topo2'
-  __cache__ = 'structure', 'references', 'transforms', 'opposites', 'boundary', 'interfaces'
+  __cache__ = 'references', 'transforms', 'opposites', 'boundary', 'interfaces'
 
   @types.apply_annotations
   def __init__(self, topo1:stricttopology, topo2:stricttopology):
@@ -2199,10 +2189,6 @@ class ProductTopology(Topology):
 
   def __mul__(self, other):
     return ProductTopology(self.topo1, self.topo2 * other)
-
-  @property
-  def structure(self):
-    return self.topo1.structure[(...,)+(_,)*self.topo2.ndims] * self.topo2.structure
 
   @property
   def references(self):
@@ -2546,19 +2532,21 @@ class MultipatchTopology(Topology):
       if len(patchdata) > 2:
         raise ValueError('Cannot create interfaces of multipatch topologies with more than two interface connections.')
       pairs = []
+      references = None
       for topo, boundary in patchdata:
         names = dict(zip(itertools.product(range(self.ndims), [0,-1]), topo._bnames))
-        # get structured set of boundary elements
-        elems = topo.boundary[names[boundary.dim, boundary.side]].structure
-        # add singleton axis
-        elems = elems[tuple(_ if i == boundary.dim else slice(None) for i in range(self.ndims))]
-        # apply canonical transformation
-        elems = boundary.apply_transform(elems)[..., 0]
-        pairs.append(tuple(elems.flat))
+        btopo = topo.boundary[names[boundary.dim, boundary.side]]
+        if references is None:
+          references = numeric.asobjvector(btopo.references).reshape(btopo.shape)
+          references = references[tuple(_ if i == boundary.dim else slice(None) for i in range(self.ndims))]
+          references = boundary.apply_transform(references)[..., 0]
+          references = tuple(references.flat)
+        transforms = numeric.asobjvector(btopo.transforms).reshape(btopo.shape)
+        transforms = transforms[tuple(_ if i == boundary.dim else slice(None) for i in range(self.ndims))]
+        transforms = boundary.apply_transform(transforms)[..., 0]
+        pairs.append(tuple(transforms.flat))
       # create structured topology of joined element pairs
-      references = tuple(elem.reference for elem in pairs[0])
-      transforms = tuple(elem.transform for elem in pairs[0])
-      opposites = tuple(elem.transform for elem in pairs[1])
+      transforms, opposites = pairs
       btopos.append(UnstructuredTopology(self.ndims-1, references, transforms, opposites))
       bconnectivity.append(numpy.array(boundaryid).reshape((2,)*(self.ndims-1)))
     # create multipatch topology of interpatch boundaries

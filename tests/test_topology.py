@@ -7,26 +7,26 @@ grid = numpy.linspace(0., 1., 4)
 def verify_connectivity(structure, geom):
   (e00,e01), (e10,e11) = structure
 
-  a0 = geom.eval(_transforms=[e00.transform], _points=numpy.array([[0,1]]))
-  a1 = geom.eval(_transforms=[e01.transform], _points=numpy.array([[0,0]]))
+  a0 = geom.eval(_transforms=[e00], _points=numpy.array([[0,1]]))
+  a1 = geom.eval(_transforms=[e01], _points=numpy.array([[0,0]]))
   numpy.testing.assert_array_almost_equal(a0, a1)
 
-  b0 = geom.eval(_transforms=[e10.transform], _points=numpy.array([[1,1]]))
-  b1 = geom.eval(_transforms=[e11.transform], _points=numpy.array([[1,0]]))
+  b0 = geom.eval(_transforms=[e10], _points=numpy.array([[1,1]]))
+  b1 = geom.eval(_transforms=[e11], _points=numpy.array([[1,0]]))
   numpy.testing.assert_array_almost_equal(b0, b1)
 
-  c0 = geom.eval(_transforms=[e00.transform], _points=numpy.array([[1,0]]))
-  c1 = geom.eval(_transforms=[e10.transform], _points=numpy.array([[0,0]]))
+  c0 = geom.eval(_transforms=[e00], _points=numpy.array([[1,0]]))
+  c1 = geom.eval(_transforms=[e10], _points=numpy.array([[0,0]]))
   numpy.testing.assert_array_almost_equal(c0, c1)
 
-  d0 = geom.eval(_transforms=[e01.transform], _points=numpy.array([[1,1]]))
-  d1 = geom.eval(_transforms=[e11.transform], _points=numpy.array([[0,1]]))
+  d0 = geom.eval(_transforms=[e01], _points=numpy.array([[1,1]]))
+  d1 = geom.eval(_transforms=[e11], _points=numpy.array([[0,1]]))
   numpy.testing.assert_array_almost_equal(d0, d1)
 
-  x00 = geom.eval(_transforms=[e00.transform], _points=numpy.array([[1,1]]))
-  x01 = geom.eval(_transforms=[e01.transform], _points=numpy.array([[1,0]]))
-  x10 = geom.eval(_transforms=[e10.transform], _points=numpy.array([[0,1]]))
-  x11 = geom.eval(_transforms=[e11.transform], _points=numpy.array([[0,0]]))
+  x00 = geom.eval(_transforms=[e00], _points=numpy.array([[1,1]]))
+  x01 = geom.eval(_transforms=[e01], _points=numpy.array([[1,0]]))
+  x10 = geom.eval(_transforms=[e10], _points=numpy.array([[0,1]]))
+  x11 = geom.eval(_transforms=[e11], _points=numpy.array([[0,0]]))
   numpy.testing.assert_array_almost_equal(x00, x01)
   numpy.testing.assert_array_almost_equal(x10, x11)
   numpy.testing.assert_array_almost_equal(x00, x11)
@@ -93,7 +93,7 @@ class structure2d(TestCase):
 
   def test_domain(self):
     domain, geom = mesh.rectilinear([[-1,0,1]]*2)
-    verify_connectivity(domain.structure, geom)
+    verify_connectivity(numeric.asobjvector(domain.transforms).reshape(domain.shape), geom)
 
   def test_boundaries(self):
     domain, geom = mesh.rectilinear([[-1,0,1]]*3)
