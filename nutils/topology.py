@@ -415,15 +415,15 @@ class Topology(types.Singleton):
 
     refine = TransformsTuple(tuple(item.transform if isinstance(item,element.Element) else item for item in refine), self.ndims)
     refined = []
-    for ref, trans, opp in zip(self.references, self.transforms, self.opposites):
+    for ref, trans in zip(self.references, self.transforms):
       if trans in refine:
-        refined.extend(element.Element(childref, trans+(childtrans,), opp+(childtrans,)) for childtrans, childref in ref.children if childref)
+        refined.extend(trans+(ctrans,) for ctrans, cref in ref.children if cref)
       else:
-        refined.append(element.Element(ref, trans, opp))
-    return self.hierarchical(refined, precise=True)
+        refined.append(trans)
+    return self.hierarchical(refined)
 
-  def hierarchical(self, refined, precise=False):
-    return HierarchicalTopology(self, refined, precise)
+  def hierarchical(self, refined):
+    return HierarchicalTopology(self, refined)
 
   @property
   def refined(self):
@@ -1935,84 +1935,57 @@ class RefinedTopology(Topology):
 class HierarchicalTopology(Topology):
   'collection of nested topology elments'
 
-  __slots__ = 'basetopo', 'references', 'transforms', 'opposites'
-  __cache__ = 'levels', 'refined', 'boundary', 'interfaces'
+  __slots__ = 'basetopo', 'references', 'transforms', 'levels', '_ilevels', '_indices', 'levels'
+  __cache__ = 'refined', 'boundary', 'interfaces', 'opposites'
 
-  @types.aspreprocessor
   @types.apply_annotations
-  def _make_precise(self, basetopo:stricttopology, allelements:types.tuple[element.strictelement], precise:bool):
-    if precise:
-      references = tuple(elem.reference for elem in allelements)
-      transforms = tuple(elem.transform for elem in allelements)
-      opposites = tuple(elem.opposite for elem in allelements)
-    else:
-      references = []
-      transforms = []
-      opposites = []
-      for elem in allelements:
-        try:
-          ielem, tail = basetopo.transforms.index_with_tail(elem.transform)
-        except ValueError:
-          continue
-        ref = basetopo.references[ielem]
-        for trans in tail:
-          index = ref.child_transforms.index(trans)
-          ref = ref.child_refs[index]
-          if not ref:
-            break
-        else:
-          ref &= elem.reference
-          if ref:
-            references.append(ref)
-            transforms.append(elem.transform)
-            opposites.append(elem.opposite)
-    return (self, basetopo, tuple(references), TransformsTuple(transforms, basetopo.ndims), TransformsTuple(opposites, basetopo.ndims)), {}
-
-  @_make_precise
-  def __init__(self, basetopo, references, transforms, opposites):
+  def __init__(self, basetopo:stricttopology, transforms:types.tuple[transform.stricttransform]):
     'constructor'
 
     assert not isinstance(basetopo, HierarchicalTopology)
     self.basetopo = basetopo
-    self.references = references
-    self.transforms = transforms
-    self.opposites = opposites
+    self.transforms = TransformsTuple(transforms, self.basetopo.ndims)
+
+    references = []
+    levels = [self.basetopo]
+    ilevels = []
+    indices =[]
+    basetrans = self.basetopo.transforms
+    for trans in self.transforms:
+      ibase, tail = basetrans.index_with_tail(trans)
+      ilevel = len(tail)
+      ilevels.append(ilevel)
+      while ilevel >= len(levels):
+        levels.append(levels[-1].refined)
+      level = levels[ilevel]
+      ielem = levels[ilevel].transforms.index(trans)
+      indices.append(ielem)
+      references.append(levels[ilevel].references[ielem])
+    self.references = tuple(references)
+    self.levels = tuple(levels)
+    self._ilevels = tuple(ilevels)
+    self._indices = tuple(indices)
+
     super().__init__(basetopo.ndims)
 
-  def getitem(self, item):
-    return self.basetopo.getitem(item).hierarchical(tuple(map(element.Element, self.references, self.transforms, self.opposites)), precise=False)
-
-  def hierarchical(self, elements, precise=False):
-    return self.basetopo.hierarchical(elements, precise)
-
   @property
-  @log.title
-  def levels(self):
-    levels = [self.basetopo]
-    for trans in self.transforms:
-      try:
-        ielem, tail = self.basetopo.transforms.index_with_tail(trans)
-      except ValueError:
-        raise Exception('element is not a refinement of basetopo')
-      else:
-        nrefine = len(tail)
-        while nrefine >= len(levels):
-          levels.append(levels[-1].refined)
-        assert trans in levels[nrefine].transforms, 'element is not a refinement of basetopo'
-    return tuple(levels)
+  def opposites(self):
+    if self.basetopo.transforms == self.basetopo.opposites:
+      return self.transforms
+    else:
+      return TransformsTuple(tuple(self.levels[ilevel].opposites[ielem] for ilevel, ielem in zip(self._ilevels, self._indices)), self.ndims)
+
+  def getitem(self, item):
+    itemtopo = self.basetopo.getitem(item)
+    return itemtopo.hierarchical(filter(itemtopo.transforms.contains_with_tail, self.transforms))
+
+  def hierarchical(self, elements):
+    return self.basetopo.hierarchical(elements)
 
   @property
   def refined(self):
-    references = []
-    transforms = []
-    opposites = []
-    for ref, trans, opp in zip(self.references, self.transforms, self.opposites):
-      for ctrans, cref in ref.children:
-        if cref:
-          references.append(cref)
-          transforms.append(trans+(ctrans,))
-          opposites.append(opp+(ctrans,))
-    return self.basetopo.hierarchical(map(element.Element, references, transforms, opposites), precise=True)
+    transforms = tuple(trans+(ctrans,) for trans, ref in zip(self.transforms, self.references) for ctrans, cref in ref.children if cref)
+    return self.basetopo.hierarchical(transforms)
 
   @property
   @log.title
@@ -2020,17 +1993,16 @@ class HierarchicalTopology(Topology):
     'boundary elements'
 
     basebtopo = self.basetopo.boundary
-    edgepool = ((edgeref, trans+(edgetrans,)) for ref, trans in zip(self.references, self.transforms) if self.basetopo.border_transforms.contains_with_tail(trans) for edgetrans, edgeref in ref.edges if edgeref is not None)
-    belems = []
+    edgepool = ((edgeref, trans+(edgetrans,)) for ref, trans in zip(self.references, self.transforms) if self.basetopo.border_transforms.contains_with_tail(trans) for edgetrans, edgeref in ref.edges if edgeref)
+    btransforms = []
     for edgeref, edgetrans in edgepool: # superset of boundary elements
       try:
         iedge, tail = basebtopo.transforms.index_with_tail(edgetrans)
       except ValueError:
         pass
       else:
-        opptrans = basebtopo.opposites[iedge] + tail
-        belems.append(element.Element(edgeref, edgetrans, opptrans))
-    return basebtopo.hierarchical(belems, precise=True)
+        btransforms.append(edgetrans)
+    return basebtopo.hierarchical(btransforms)
 
   @property
   @log.title
@@ -2040,11 +2012,8 @@ class HierarchicalTopology(Topology):
     references = []
     transforms = []
     opposites = []
-    for ref, trans in log.zip('elem', self.references, self.transforms):
-      # Get `level`, element number at `level` of `trans`.
-      ibase, tail = self.basetopo.transforms.index_with_tail(trans)
-      level = self.levels[len(tail)]
-      ielem = level.transforms.index(trans)
+    for ref, trans, ilevel, ielem in log.zip('elem', self.references, self.transforms, self._ilevels, self._indices):
+      level = self.levels[ilevel]
       # Loop over neighbors of `trans`.
       for ielemedge, ineighbor in enumerate(level.connectivity[ielem]):
         if ineighbor < 0:
