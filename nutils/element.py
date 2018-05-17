@@ -1155,6 +1155,7 @@ class Element(types.Singleton):
     self.reference = reference
     self.transform = trans
     self.opposite = opptrans or trans
+    warnings.deprecation('element.Element is deprecated')
 
   def withopposite(self, opp):
     assert isinstance(opp, Element) and opp.reference == self.reference
