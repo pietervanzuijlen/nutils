@@ -77,8 +77,10 @@ class Sample(types.Singleton):
 
   @types.apply_annotations
   def __init__(self, transforms:tuple, points:types.tuple[points.strictpoints], index:types.tuple[types.frozenarray[types.strictint]]):
-    assert len(transforms) == len(points) == len(index)
-    self.nelems = len(transforms)
+    assert len(points) == len(index)
+    assert len(transforms) >= 1
+    assert all(len(t) == len(points) for t in transforms)
+    self.nelems = len(transforms[0])
     self.transforms = transforms
     self.points = points
     self.index = index
@@ -124,7 +126,7 @@ class Sample(types.Singleton):
     offsets = numpy.zeros((len(blocks), self.nelems+1), dtype=int)
     if blocks:
       sizefunc = function.stack([f.size for ifunc, ind, f in blocks]).simplified
-      for ielem, transforms in enumerate(self.transforms):
+      for ielem, transforms in enumerate(zip(*self.transforms)):
         n, = sizefunc.eval(_transforms=transforms, **arguments)
         offsets[:,ielem+1] = offsets[:,ielem] + n
 
@@ -156,7 +158,7 @@ class Sample(types.Singleton):
     valueindexfunc = function.Tuple(function.Tuple([value]+list(index)) for value, index in zip(values, indices))
     for ielem in parallel.pariter(log.range('elem', self.nelems), nprocs=nprocs):
       points = self.points[ielem]
-      for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(_transforms=self.transforms[ielem], _points=points.coords, **arguments)):
+      for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(_transforms=tuple(t[ielem] for t in self.transforms), _points=points.coords, **arguments)):
         s = slice(*offsets[iblock,ielem:ielem+2])
         data, index = data_index[block2func[iblock]]
         w_intdata = numeric.dot(points.weights, intdata)
@@ -205,7 +207,7 @@ class Sample(types.Singleton):
     if config.dot:
       idata.graphviz()
 
-    for transforms, points, index in parallel.pariter(log.zip('elem', self.transforms, self.points, self.index), nprocs=nprocs):
+    for points, index, *transforms in parallel.pariter(log.zip('elem', self.points, self.index, *self.transforms), nprocs=nprocs):
       for ifunc, inds, data in idata.eval(_transforms=transforms, _points=points.coords, _cache=fcache, **arguments):
         numpy.add.at(retvals[ifunc], numpy.ix_(index, *[ind for (ind,) in inds]), data)
 
@@ -232,7 +234,7 @@ class Sample(types.Singleton):
         The sampled data.
     '''
 
-    index, tail = function.FindTransform(tuple(t[0] for t in self.transforms), function.Promote(self.ndims, trans=function.TRANS))
+    index, tail = function.FindTransform(self.transforms[0], function.Promote(self.ndims, trans=function.TRANS))
     return function.Sampled(self, array, index, function.ApplyTransforms(tail))
 
   @property
@@ -277,7 +279,7 @@ class Sample(types.Singleton):
     '''
 
     selection = [ielem for ielem in range(self.nelems) if mask[self.index[ielem]].any()]
-    transforms = [self.transforms[ielem] for ielem in selection]
+    transforms = tuple(tuple(t[ielem] for ielem in selection) for t in self.transforms)
     points = [self.points[ielem] for ielem in selection]
     offset = numpy.cumsum([0] + [p.npoints for p in points])
     return Sample(transforms, points, map(numpy.arange, offset[:-1], offset[1:]))

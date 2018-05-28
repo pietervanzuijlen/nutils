@@ -231,10 +231,9 @@ class Topology(types.Singleton):
   def sample(self, ischeme, degree):
     'Create sample.'
 
-    transforms = tuple(zip(self.transforms, self.opposites))
     points = tuple(ref.getpoints(ischeme, degree) for ref in self.references)
     offset = numpy.cumsum([0] + [p.npoints for p in points])
-    return sample.Sample(transforms, points, map(numpy.arange, offset[:-1], offset[1:]))
+    return sample.Sample((self.transforms, self.opposites), points, map(numpy.arange, offset[:-1], offset[1:]))
 
   @util.single_or_multiple
   def elem_eval(self, funcs, ischeme, separate=False, geometry=None, asfunction=False, *, edit=None, title='elem_eval', **kwargs):
@@ -678,14 +677,16 @@ class Topology(types.Singleton):
       else:
         raise LocateError('failed to locate point: {}'.format(coord))
     transforms = []
+    opposites = []
     points_ = []
     index = []
     for ielem in numpy.unique(ielems):
       w, = numpy.equal(ielems, ielem).nonzero()
-      transforms.append((self.transforms[ielem], self.opposites[ielem]))
+      transforms.append(self.transforms[ielem])
+      opposites.append(self.opposites[ielem])
       points_.append(points.CoordsPoints(xis[w]))
       index.append(w)
-    return sample.Sample(transforms, points_, index)
+    return sample.Sample((tuple(transforms), tuple(opposites)), points_, index)
 
   def supp(self, basis, mask=None):
     if mask is None:
