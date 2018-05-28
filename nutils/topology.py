@@ -36,11 +36,58 @@ out in element loops. For lower level operations topologies can be used as
 """
 
 from . import element, function, util, numpy, parallel, log, config, numeric, cache, transform, warnings, matrix, types, sample, points, _
-import functools, collections.abc, itertools, functools, operator, numbers, pathlib
+import functools, collections.abc, itertools, functools, operator, numbers, pathlib, abc
 
 _identity = lambda x: x
 
-class TransformsTuple(types.Singleton):
+class Transforms(types.Singleton):
+
+  __slots__ = ()
+
+  def __init__(self):
+    super().__init__()
+
+  @abc.abstractmethod
+  def __iter__(self):
+    pass
+
+  @abc.abstractmethod
+  def __getitem__(self, item):
+    pass
+
+  @abc.abstractmethod
+  def __len__(self):
+    pass
+
+  @abc.abstractmethod
+  def index_with_tail(self, trans):
+    pass
+
+  def index(self, trans):
+    index, tail = self.index_with_tail(trans)
+    if tail:
+      raise ValueError
+    return index
+
+  def contains(self, trans):
+    try:
+      self.index(trans)
+    except ValueError:
+      return False
+    else:
+      return True
+
+  __contains__ = contains
+
+  def contains_with_tail(self, trans):
+    try:
+      self.index_with_tail(trans)
+    except ValueError:
+      return False
+    else:
+      return True
+
+class TransformsTuple(Transforms):
 
   __slots__ = '_transforms', '_sorted', '_indices', '_fromdims'
 
@@ -65,12 +112,6 @@ class TransformsTuple(types.Singleton):
   def __len__(self):
     return len(self._transforms)
 
-  def index(self, trans):
-    index, tail = self.index_with_tail(trans)
-    if tail:
-      raise ValueError
-    return index
-
   def index_with_tail(self, trans):
     head, tail = transform.promote(trans, self._fromdims)
     headid_array = numpy.empty((), dtype=object)
@@ -82,24 +123,6 @@ class TransformsTuple(types.Singleton):
     if headid[:len(match)] != match:
       raise ValueError
     return self._indices[i], head[len(match):] + tail
-
-  def contains(self, trans):
-    try:
-      self.index(trans)
-    except ValueError:
-      return False
-    else:
-      return True
-
-  __contains__ = contains
-
-  def contains_with_tail(self, trans):
-    try:
-      self.index_with_tail(trans)
-    except ValueError:
-      return False
-    else:
-      return True
 
 class Topology(types.Singleton):
   'topology base class'
@@ -1189,6 +1212,116 @@ class BndAxis(Axis):
     self.ibound = ibound
     self.side = side
 
+class StructuredTransforms(Transforms):
+
+  __slots__ = '_root', '_axes', '_nrefine', '_strides0', '_offset0', '_refined_shape', '_child_transforms', '_child_offsets', '_child_strides', '_etransforms'
+
+  @staticmethod
+  def _gen_strides(shape):
+    stride = 1
+    strides = []
+    for n in reversed(tuple(shape)):
+      if n:
+        strides.insert(0, stride)
+        stride *= n
+      else:
+        strides.insert(0, 0)
+    return tuple(strides)
+
+  @types.apply_annotations
+  def __init__(self, root:transform.stricttransformitem, axes:types.tuple[types.strict[Axis]], nrefine:types.strictint):
+    self._root = root
+    self._axes = axes
+    self._nrefine = nrefine
+
+    strides = self._gen_strides(n for axis in self._axes for n in (((axis.j-axis.i)>>self._nrefine, 1<<self._nrefine) if axis.isdim else (0, 0)))
+    self._strides0 = strides[::2]
+    finest_strides = tuple(s for s in strides[1::2] if s)
+
+    self._refined_shape = tuple(axis.j-axis.i if axis.isdim else 1 for axis in self._axes)
+    self._offset0 = numpy.array([axis.i>>self._nrefine for axis in self._axes], dtype=float)
+
+    if self._nrefine > 0:
+      ndimaxes = sum(axis.isdim for axis in self._axes)
+      assert ndimaxes > 0
+      child_transforms = functools.reduce(operator.mul, (element.LineReference(),)*ndimaxes).child_transforms
+      self._child_transforms = numeric.asobjvector(child_transforms).reshape(*(2 if axis.isdim else 1 for axis in self._axes))
+      # Offsets of child transforms at finest level.
+      self._child_offsets = {trans: sum(offsets) for trans, offsets in zip(child_transforms, itertools.product(*zip((0,)*ndimaxes, finest_strides)))}
+      # Strides for above offsets for all levels excluding the base level.
+      self._child_strides = self._gen_strides((2,)*self._nrefine)
+    else:
+      self._child_transforms = numpy.empty((), dtype=object)
+      self._child_offsets = {}
+      self._child_strides = ()
+
+    assert all(axis.isdim for axis in self._axes)
+    self._etransforms = ()
+
+    super().__init__()
+
+  def __iter__(self):
+    for indices in numpy.ndindex(self._refined_shape):
+      child_transforms = []
+      for i in range(self._nrefine):
+        indices, r = numpy.divmod(indices, self._child_transforms.shape)
+        child_transforms.insert(0, self._child_transforms[tuple(r)])
+      trans0 = transform.Shift(types.frozenarray(self._offset0+indices, dtype=float, copy=False))
+      yield (self._root, trans0, *self._etransforms, *child_transforms)
+
+  def __getitem__(self, item):
+    assert numeric.isint(item)
+
+    indices = numpy.empty(len(self._axes), int)
+    for i, n in reversed(tuple(enumerate(self._refined_shape))):
+      item, rem = divmod(item, n)
+      indices[i] = rem
+    if item != 0:
+      raise IndexError
+
+    child_transforms = []
+    for i in range(self._nrefine):
+      indices, r = numpy.divmod(indices, self._child_transforms.shape)
+      child_transforms.insert(0, self._child_transforms[tuple(r)])
+
+    trans0 = transform.Shift(types.frozenarray(self._offset0+indices, dtype=float, copy=False))
+    return (self._root, trans0, *self._etransforms, *child_transforms)
+
+  def __len__(self):
+    return functools.reduce(operator.mul, self._refined_shape, 1)
+
+  def index_with_tail(self, trans):
+    head, tail = transform.promote(trans, sum(axis.isdim for axis in self._axes))
+    root, head = head[0], head[1:]
+
+    if root != self._root:
+      raise ValueError
+    if len(head) < 1 + self._nrefine:
+      raise ValueError
+
+    iflat = 0
+
+    if not isinstance(head[0], transform.Shift) or len(head[0].offset) != len(self._axes):
+      raise ValueError
+    for axis, stride, offset in zip(self._axes, self._strides0, head[0].offset):
+      if axis.isdim:
+        int_offset = int(offset)
+        if not (axis.i>>self._nrefine <= int_offset < axis.j>>self._nrefine) or int_offset != offset:
+          raise ValueError
+        iflat += (int_offset - (axis.i>>self._nrefine)) * stride
+      else:
+        if offset != axis.i>>self._nrefine:
+          raise ValueError
+
+    for factor, trans in zip(self._child_strides, head[1:]):
+      try:
+        offset = self._child_offsets[trans]
+      except KeyError as e:
+        raise ValueError from e
+      iflat += offset * factor
+
+    return iflat, head[1+self._nrefine:] + tail
+
 class StructuredTopology(Topology):
   'structured topology'
 
@@ -1274,7 +1407,10 @@ class StructuredTopology(Topology):
 
   @property
   def transforms(self):
-    return self.mktransforms(self.axes, self.root, self.nrefine)
+    if all(axis.isdim for axis in self.axes):
+      return StructuredTransforms(self.root, self.axes, self.nrefine)
+    else:
+      return self.mktransforms(self.axes, self.root, self.nrefine)
 
   @property
   def opposites(self):
