@@ -42,9 +42,11 @@ _identity = lambda x: x
 
 class Transforms(types.Singleton):
 
-  __slots__ = ()
+  __slots__ = 'fromdims'
 
-  def __init__(self):
+  @types.apply_annotations
+  def __init__(self, fromdims:types.strictint):
+    self.fromdims = fromdims
     super().__init__()
 
   @abc.abstractmethod
@@ -89,7 +91,7 @@ class Transforms(types.Singleton):
 
 class TransformsTuple(Transforms):
 
-  __slots__ = '_transforms', '_sorted', '_indices', '_fromdims'
+  __slots__ = '_transforms', '_sorted', '_indices'
 
   @types.apply_annotations
   def __init__(self, transforms:types.tuple[transform.canonical], fromdims:types.strictint):
@@ -100,8 +102,7 @@ class TransformsTuple(Transforms):
       self._sorted[i] = tuple(map(id, trans))
     self._indices = numpy.argsort(self._sorted)
     self._sorted = self._sorted[self._indices]
-    self._fromdims = fromdims
-    super().__init__()
+    super().__init__(fromdims)
 
   def __iter__(self):
     return iter(self._transforms)
@@ -113,7 +114,9 @@ class TransformsTuple(Transforms):
     return len(self._transforms)
 
   def index_with_tail(self, trans):
-    head, tail = transform.promote(trans, self._fromdims)
+    if trans is function.TRANS:
+      return TransformsIndexWithTail(self, trans)
+    head, tail = transform.promote(trans, self.fromdims)
     headid_array = numpy.empty((), dtype=object)
     headid_array[()] = headid = tuple(map(id, head))
     i = numpy.searchsorted(self._sorted, headid_array, side='right') - 1
@@ -123,6 +126,34 @@ class TransformsTuple(Transforms):
     if headid[:len(match)] != match:
       raise ValueError
     return self._indices[i], head[len(match):] + tail
+
+class TransformsIndexWithTail(function.Evaluable):
+
+  __slots__ = '_transforms'
+
+  @types.apply_annotations
+  def __init__(self, transforms:types.strict[Transforms], trans:types.strict[function.TransformChain]):
+    self._transforms = transforms
+    super().__init__(args=[function.Promote(self._transforms.fromdims, trans)])
+
+  def evalf(self, trans):
+    index, tail = self._transforms.index_with_tail(trans)
+    return numpy.array(index)[None], tail
+
+  def __len__(self):
+    return 2
+
+  @property
+  def index(self):
+    return function.ArrayFromTuple(self, index=0, shape=(), dtype=int)
+
+  @property
+  def tail(self):
+    return function.TransformChainFromTuple(self, index=1, todims=self._transforms.fromdims)
+
+  def __iter__(self):
+    yield self.index
+    yield self.tail
 
 class Topology(types.Singleton):
   'topology base class'
@@ -278,7 +309,7 @@ class Topology(types.Singleton):
   def integrate_elementwise(self, funcs, *, asfunction=False, **kwargs):
     'element-wise integration'
 
-    ielem = function.FindTransform(self.transforms, function.TRANS).index
+    ielem = self.transforms.index_with_tail(function.TRANS).index
     with matrix.backend('numpy'):
       retvals = self.integrate([function.Inflate(function.asarray(func)[_], dofmap=ielem[_], length=len(self), axis=0) for func in funcs], **kwargs)
     retvals = [retval.export('dense') if len(retval.shape) == 2 else retval for retval in retvals]
@@ -593,7 +624,7 @@ class Topology(types.Singleton):
       subtopo = self[subtopo]
     values = types.frozenarray([int(trans in subtopo.transforms) for trans in self.transforms])
     assert len(subtopo) == values.sum(0), '{} is not a proper subtopology of {}'.format(subtopo, self)
-    return function.Get(values, axis=0, item=function.FindTransform(self.transforms, function.Promote(self.ndims, trans=function.TRANS)).index)
+    return function.Get(values, axis=0, item=self.transforms.index_with_tail(function.TRANS).index)
 
   def select(self, indicator, ischeme='bezier2', *, arguments=None):
     values = self.elem_eval(indicator, ischeme, separate=True, arguments=arguments)
@@ -1258,7 +1289,7 @@ class StructuredTransforms(Transforms):
     assert all(axis.isdim for axis in self._axes)
     self._etransforms = ()
 
-    super().__init__()
+    super().__init__(sum(axis.isdim for axis in self._axes))
 
   def __iter__(self):
     for indices in numpy.ndindex(self._refined_shape):
@@ -1291,7 +1322,10 @@ class StructuredTransforms(Transforms):
     return functools.reduce(operator.mul, self._refined_shape, 1)
 
   def index_with_tail(self, trans):
-    head, tail = transform.promote(trans, sum(axis.isdim for axis in self._axes))
+    if trans is function.TRANS:
+      return TransformsIndexWithTail(self, trans)
+
+    head, tail = transform.promote(trans, self.fromdims)
     root, head = head[0], head[1:]
 
     if root != self._root:
@@ -2631,7 +2665,7 @@ class MultipatchTopology(Topology):
     npatches = len(self.patches)
     coeffs = [types.frozenarray(1, dtype=int).reshape(1, *(1,)*self.ndims)]*npatches
     dofs = types.frozenarray(range(npatches), dtype=int)[:,_]
-    return function.polyfunc(coeffs, dofs, npatches, ((patch.topo.root,) for patch in self.patches))
+    return function.polyfunc(coeffs, dofs, npatches, TransformsTuple(tuple((patch.topo.root,) for patch in self.patches), self.ndims))
 
   @property
   def boundary(self):

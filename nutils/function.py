@@ -3532,26 +3532,24 @@ def eig(arg, axes=(-2,-1), symmetric=False):
   return Tuple([transpose(diagonalize(eigval), _invtrans(trans)), transpose(eigvec, _invtrans(trans))])
 
 @types.apply_annotations
-def polyfunc(coeffs:types.tuple[types.frozenarray], dofs:types.tuple[types.frozenarray], ndofs:types.strictint, transforms:types.tuple[transform.stricttransform]):
+def polyfunc(coeffs:types.tuple[types.frozenarray], dofs:types.tuple[types.frozenarray], ndofs:types.strictint, transforms):
   '''
   Create an inflated :class:`Polyval` with coefficients ``coeffs`` and
   corresponding dofs ``dofs``.  The arguments ``coeffs``, ``dofs`` and
   ``transforms`` are assumed to have matching order.
   '''
 
-  fromdims, = set(transform[-1].fromdims for transform in transforms)
-  promote = Promote(fromdims, trans=TRANS)
-  index, tail = FindTransform(transforms, promote)
+  index, tail = transforms.index_with_tail(TRANS)
   dofmap = DofMap(dofs, index=index)
   points = ApplyTransforms(tail)
   func = Polyval(Elemwise(coeffs, index, dtype=float), points)
   return Inflate(func, dofmap, ndofs, axis=0)
 
 @types.apply_annotations
-def elemwise(transforms:types.tuple[transform.stricttransform], values:types.tuple[types.frozenarray], shape:types.tuple[types.strictint]):
+def elemwise(transforms, values:types.tuple[types.frozenarray], shape:types.tuple[types.strictint]):
   fromdims, = set(transform[-1].fromdims for transform in transforms)
   promote = Promote(fromdims, trans=TRANS)
-  index, tail = FindTransform(transforms, promote)
+  index, tail = transforms.index_with_tail(TRANS)
   return Elemwise(values, index, dtype=float)
 
 def take(arg, index, axis):

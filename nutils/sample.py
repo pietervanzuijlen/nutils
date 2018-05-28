@@ -234,7 +234,7 @@ class Sample(types.Singleton):
         The sampled data.
     '''
 
-    index, tail = function.FindTransform(self.transforms[0], function.Promote(self.ndims, trans=function.TRANS))
+    index, tail = self.transforms[0].index_with_tail(function.TRANS)
     return function.Sampled(self, array, index, function.ApplyTransforms(tail))
 
   @property

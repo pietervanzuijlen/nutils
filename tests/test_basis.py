@@ -236,7 +236,7 @@ class unstructured_topology(TestCase):
   def test_poly(self):
     target = (self.geom**self.degree).sum(-1)
     if self.btype == 'discont':
-      target += function.FindTransform(self.domain.transforms, function.TRANS).index
+      target += self.domain.transforms.index_with_tail(function.TRANS).index
     projection = self.domain.projection(target, onto=self.basis, geometry=self.geom, ischeme='gauss', degree=2*self.degree, droptol=0)
     error = numpy.sqrt(self.domain.integrate((target-projection)**2, geometry=self.geom, ischeme='gauss', degree=2*self.degree))
     numpy.testing.assert_almost_equal(error, 0, decimal=12)

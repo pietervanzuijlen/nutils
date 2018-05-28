@@ -460,7 +460,7 @@ class elemwise(TestCase):
   def setUp(self):
     super().setUp()
     self.domain, geom = mesh.rectilinear([5])
-    self.index = function.FindTransform(self.domain.transforms, function.TRANS).index
+    self.index = self.domain.transforms.index_with_tail(function.TRANS).index
     self.data = tuple(map(types.frozenarray, (
       numpy.arange(1, dtype=float).reshape(1,1),
       numpy.arange(2, dtype=float).reshape(1,2),
