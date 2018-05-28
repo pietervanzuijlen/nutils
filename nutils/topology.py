@@ -50,10 +50,6 @@ class Transforms(types.Singleton):
     super().__init__()
 
   @abc.abstractmethod
-  def __iter__(self):
-    pass
-
-  @abc.abstractmethod
   def __getitem__(self, item):
     pass
 
@@ -64,6 +60,11 @@ class Transforms(types.Singleton):
   @abc.abstractmethod
   def index_with_tail(self, trans):
     pass
+
+  def __iter__(self):
+    for i in range(len(self)):
+      yield self[i]
+
 
   def index(self, trans):
     index, tail = self.index_with_tail(trans)
@@ -88,6 +89,8 @@ class Transforms(types.Singleton):
       return False
     else:
       return True
+
+stricttransforms = types.strict[Transforms]
 
 class TransformsTuple(Transforms):
 
@@ -114,7 +117,7 @@ class TransformsTuple(Transforms):
     return len(self._transforms)
 
   def index_with_tail(self, trans):
-    if trans is function.TRANS:
+    if isinstance(trans, function.TransformChain):
       return TransformsIndexWithTail(self, trans)
     head, tail = transform.promote(trans, self.fromdims)
     headid_array = numpy.empty((), dtype=object)
@@ -132,9 +135,9 @@ class TransformsIndexWithTail(function.Evaluable):
   __slots__ = '_transforms'
 
   @types.apply_annotations
-  def __init__(self, transforms:types.strict[Transforms], trans:types.strict[function.TransformChain]):
+  def __init__(self, transforms:stricttransforms, trans:types.strict[function.TransformChain]):
     self._transforms = transforms
-    super().__init__(args=[function.Promote(self._transforms.fromdims, trans)])
+    super().__init__(args=[trans])
 
   def evalf(self, trans):
     index, tail = self._transforms.index_with_tail(trans)
@@ -1245,7 +1248,7 @@ class BndAxis(Axis):
 
 class StructuredTransforms(Transforms):
 
-  __slots__ = '_root', '_axes', '_nrefine', '_strides0', '_offset0', '_refined_shape', '_child_transforms', '_child_offsets', '_child_strides', '_etransforms'
+  __slots__ = '_root', '_axes', '_nrefine', '_strides0', '_refined_offset', '_refined_shape', '_child_transforms', '_child_offsets', '_child_strides', '_etransforms'
 
   @staticmethod
   def _gen_strides(shape):
@@ -1270,13 +1273,25 @@ class StructuredTransforms(Transforms):
     finest_strides = tuple(s for s in strides[1::2] if s)
 
     self._refined_shape = tuple(axis.j-axis.i if axis.isdim else 1 for axis in self._axes)
-    self._offset0 = numpy.array([axis.i>>self._nrefine for axis in self._axes], dtype=float)
+    self._refined_offset = numpy.array([(axis.i if axis.isdim else (axis.i-1 if axis.side else axis.j)) >> (0 if axis.isdim else self._nrefine) for axis in self._axes], dtype=int)
+
+    etransforms = []
+    rmdims = numpy.zeros(len(axes), dtype=bool)
+    for order, side, idim in sorted((axis.ibound, axis.side, idim) for idim, axis in enumerate(axes) if not axis.isdim):
+      ref = util.product(element.getsimplex(0 if rmdim else 1) for rmdim in rmdims)
+      iedge = (idim - rmdims[:idim].sum()) * 2 + 1 - side
+      etransforms.append(ref.edge_transforms[iedge])
+      rmdims[idim] = True
+    self._etransforms = tuple(etransforms)
 
     if self._nrefine > 0:
       ndimaxes = sum(axis.isdim for axis in self._axes)
       assert ndimaxes > 0
-      child_transforms = functools.reduce(operator.mul, (element.LineReference(),)*ndimaxes).child_transforms
+      ref = element.LineReference()**len(self._axes)
+      child_transforms = tuple(transform.canonical((trans,)+self._etransforms) for trans in ref.child_transforms)
+      child_transforms = tuple(trans[-1] for trans in child_transforms if trans[:-1] == self._etransforms)
       self._child_transforms = numeric.asobjvector(child_transforms).reshape(*(2 if axis.isdim else 1 for axis in self._axes))
+      assert self._child_transforms.shape == tuple(2 if axis.isdim else 1 for axis in self._axes)
       # Offsets of child transforms at finest level.
       self._child_offsets = {trans: sum(offsets) for trans, offsets in zip(child_transforms, itertools.product(*zip((0,)*ndimaxes, finest_strides)))}
       # Strides for above offsets for all levels excluding the base level.
@@ -1286,43 +1301,31 @@ class StructuredTransforms(Transforms):
       self._child_offsets = {}
       self._child_strides = ()
 
-    assert all(axis.isdim for axis in self._axes)
-    self._etransforms = ()
-
     super().__init__(sum(axis.isdim for axis in self._axes))
-
-  def __iter__(self):
-    for indices in numpy.ndindex(self._refined_shape):
-      child_transforms = []
-      for i in range(self._nrefine):
-        indices, r = numpy.divmod(indices, self._child_transforms.shape)
-        child_transforms.insert(0, self._child_transforms[tuple(r)])
-      trans0 = transform.Shift(types.frozenarray(self._offset0+indices, dtype=float, copy=False))
-      yield (self._root, trans0, *self._etransforms, *child_transforms)
 
   def __getitem__(self, item):
     assert numeric.isint(item)
 
-    indices = numpy.empty(len(self._axes), int)
+    indices = self._refined_offset.copy()
     for i, n in reversed(tuple(enumerate(self._refined_shape))):
       item, rem = divmod(item, n)
-      indices[i] = rem
+      indices[i] += rem
     if item != 0:
       raise IndexError
 
     child_transforms = []
     for i in range(self._nrefine):
-      indices, r = numpy.divmod(indices, self._child_transforms.shape)
+      indices, r = divmod(numpy.asarray(indices), numpy.asarray(self._child_transforms.shape))
       child_transforms.insert(0, self._child_transforms[tuple(r)])
 
-    trans0 = transform.Shift(types.frozenarray(self._offset0+indices, dtype=float, copy=False))
+    trans0 = transform.Shift(types.frozenarray(indices, dtype=float, copy=False))
     return (self._root, trans0, *self._etransforms, *child_transforms)
 
   def __len__(self):
     return functools.reduce(operator.mul, self._refined_shape, 1)
 
   def index_with_tail(self, trans):
-    if trans is function.TRANS:
+    if isinstance(trans, function.TransformChain):
       return TransformsIndexWithTail(self, trans)
 
     head, tail = transform.promote(trans, self.fromdims)
@@ -1330,31 +1333,37 @@ class StructuredTransforms(Transforms):
 
     if root != self._root:
       raise ValueError
-    if len(head) < 1 + self._nrefine:
+    if len(head) < 1 + len(self._etransforms) + self._nrefine:
       raise ValueError
 
     iflat = 0
 
+    if head[1:1+len(self._etransforms)] != self._etransforms:
+      raise ValueError
+
     if not isinstance(head[0], transform.Shift) or len(head[0].offset) != len(self._axes):
       raise ValueError
     for axis, stride, offset in zip(self._axes, self._strides0, head[0].offset):
+      int_offset = int(offset)
+      if int_offset != offset:
+        raise ValueError
+      offset = int_offset
       if axis.isdim:
-        int_offset = int(offset)
-        if not (axis.i>>self._nrefine <= int_offset < axis.j>>self._nrefine) or int_offset != offset:
+        if not (axis.i>>self._nrefine <= offset < axis.j>>self._nrefine):
           raise ValueError
-        iflat += (int_offset - (axis.i>>self._nrefine)) * stride
+        iflat += (offset - (axis.i>>self._nrefine)) * stride
       else:
-        if offset != axis.i>>self._nrefine:
+        if offset != (axis.i-1 if axis.side else axis.j)>>self._nrefine:
           raise ValueError
 
-    for factor, trans in zip(self._child_strides, head[1:]):
+    for factor, trans in zip(self._child_strides, head[1+len(self._etransforms):]):
       try:
         offset = self._child_offsets[trans]
       except KeyError as e:
         raise ValueError from e
       iflat += offset * factor
 
-    return iflat, head[1+self._nrefine:] + tail
+    return iflat, head[1+len(self._etransforms)+self._nrefine:] + tail
 
 class StructuredTopology(Topology):
   'structured topology'
@@ -1411,40 +1420,9 @@ class StructuredTopology(Topology):
     dimaxes = (axis for axis in self.axes if axis.isdim)
     return tuple(idim for idim, axis in enumerate(dimaxes) if axis.isdim and axis.isperiodic)
 
-  @staticmethod
-  def mktransforms(axes, root, nrefine):
-    assert nrefine >= 0
-
-    updim = []
-    rmdims = numpy.zeros(len(axes), dtype=bool)
-    for order, side, idim in sorted((axis.ibound, axis.side, idim) for idim, axis in enumerate(axes) if not axis.isdim):
-      ref = util.product(element.getsimplex(0 if rmdim else 1) for rmdim in rmdims)
-      iedge = (idim - rmdims[:idim].sum()) * 2 + 1 - side
-      updim.append(ref.edge_transforms[iedge])
-      rmdims[idim] = True
-
-    grid = [numpy.arange(axis.i>>nrefine, ((axis.j-1)>>nrefine)+1) if axis.isdim else numpy.array([(axis.i-1 if axis.side else axis.j)>>nrefine]) for axis in axes]
-    indices = numeric.broadcast(*numeric.ix(grid))
-    transforms = numeric.asobjvector([transform.Shift(numpy.array(index, dtype=float))] for index in log.iter('elem', indices, indices.size)).reshape(indices.shape)
-
-    if nrefine:
-      scales = numeric.asobjvector([trans] for trans in (element.LineReference()**len(axes)).child_transforms).reshape((2,)*len(axes))
-      for irefine in log.range('level', nrefine-1, -1, -1):
-        offsets = numpy.array([r[0] for r in grid])
-        grid = [numpy.arange(axis.i>>irefine,((axis.j-1)>>irefine)+1) if axis.isdim else numpy.array([(axis.i-1 if axis.side else axis.j)>>irefine]) for axis in axes]
-        A = transforms[numpy.broadcast_arrays(*numeric.ix(r//2-o for r, o in zip(grid, offsets)))]
-        B = scales[numpy.broadcast_arrays(*numeric.ix(r%2 for r in grid))]
-        transforms = A + B
-
-    shape = tuple(axis.j - axis.i for axis in axes if axis.isdim)
-    return TransformsTuple(tuple(transform.canonical([root] + trans + updim) for trans in log.iter('canonical', transforms.flat)), len(shape))
-
   @property
   def transforms(self):
-    if all(axis.isdim for axis in self.axes):
-      return StructuredTransforms(self.root, self.axes, self.nrefine)
-    else:
-      return self.mktransforms(self.axes, self.root, self.nrefine)
+    return StructuredTransforms(self.root, self.axes, self.nrefine)
 
   @property
   def opposites(self):
@@ -1452,7 +1430,7 @@ class StructuredTopology(Topology):
     if nbounds == 0:
       return self.transforms
     axes = [BndAxis(axis.i, axis.j, axis.ibound, not axis.side) if not axis.isdim and axis.ibound==nbounds-1 else axis for axis in self.axes]
-    return self.mktransforms(axes, self.root, self.nrefine)
+    return StructuredTransforms(self.root, axes, self.nrefine)
 
   @property
   def connectivity(self):
@@ -1803,7 +1781,7 @@ class SimplexTopology(Topology):
     ndims = simplices.shape[1]-1
     self.references = (element.getsimplex(ndims),)*len(simplices)
     self.transforms = TransformsTuple(transforms, ndims)
-    self.opposites = transforms
+    self.opposites = self.transforms
     super().__init__(ndims)
 
   @property
@@ -1891,7 +1869,7 @@ class UnionTopology(Topology):
         references.append(refs[0])
         opposite, = set(self._topos[itopo].opposites[itrans] for itopo, itrans in indices)
         opposites.append(opposite)
-    return references, TransformsTuple(transforms, self.ndims), TransformsTuple(opposites, self.ndims)
+    return tuple(references), TransformsTuple(transforms, self.ndims), TransformsTuple(opposites, self.ndims)
 
   @property
   def references(self):
@@ -1909,11 +1887,41 @@ class UnionTopology(Topology):
   def refined(self):
     return UnionTopology([topo.refined for topo in self._topos], self._names)
 
+class SubsetTransforms(Transforms):
+
+  __slots__ = '_base', '_mask', '_transmap'
+
+  @types.apply_annotations
+  def __init__(self, base:stricttransforms, transmap:types.frozenarray[types.strictint]):
+    self._base = base
+    self._transmap = transmap
+    super().__init__(base.fromdims)
+
+  def __iter__(self):
+    for itrans in self._transmap:
+      yield self._base[int(itrans)]
+
+  def __getitem__(self, item):
+    return self._base[int(self._transmap[item])]
+
+  def __len__(self):
+    return len(self._transmap)
+
+  def index_with_tail(self, trans):
+    if isinstance(trans, function.TransformChain):
+      return TransformsIndexWithTail(self, trans)
+    base_index, tail = self._base.index_with_tail(trans)
+    index = numpy.searchsorted(self._transmap, base_index)
+    if index == len(self._transmap) or self._transmap[index] != base_index:
+      raise ValueError
+    else:
+      return int(index), tail
+
 class SubsetTopology(Topology):
   'trimmed'
 
   __slots__ = 'refs', 'basetopo', 'newboundary'
-  __cache__ = 'connectivity', 'references', 'transforms', 'opposites', 'boundary', 'interfaces'
+  __cache__ = 'connectivity', 'references', 'transforms', 'opposites', 'boundary', 'interfaces', '_transmap'
 
   @types.apply_annotations
   def __init__(self, basetopo:stricttopology, refs:types.tuple[element.strictreference], newboundary=None):
@@ -1954,12 +1962,16 @@ class SubsetTopology(Topology):
     return tuple(filter(None, self.refs))
 
   @property
+  def _transmap(self):
+    return types.frozenarray(numpy.array([i for i, ref in enumerate(self.refs) if ref], int), dtype=types.strictint)
+
+  @property
   def transforms(self):
-    return TransformsTuple(tuple(trans for trans, ref in zip(self.basetopo.transforms, self.refs) if ref), self.ndims)
+    return SubsetTransforms(self.basetopo.transforms, self._transmap)
 
   @property
   def opposites(self):
-    return TransformsTuple(tuple(opp for opp, ref in zip(self.basetopo.opposites, self.refs) if ref), self.ndims)
+    return SubsetTransforms(self.basetopo.opposites, self._transmap)
 
   @property
   def refined(self):
@@ -2342,6 +2354,60 @@ class HierarchicalTopology(Topology):
 
     return function.polyfunc(hbasis_coeffs, hbasis_dofs, ndofs, self.transforms)
 
+class ProductReferences(types.Singleton):
+
+  __slots__ = '_refs1', '_refs2'
+  __cache__ = '__len__'
+
+  @types.apply_annotations
+  def __init__(self, references1, references2):
+    self._refs1 = references1
+    self._refs2 = references2
+
+  def __len__(self):
+    return len(self._refs1)*len(self._refs2)
+
+  def __getitem__(self, item):
+    item1, item2 = divmod(item, len(self._refs2))
+    return self._refs1[item1]*self._refs2[item2]
+
+  def __iter__(self):
+    for ref1 in self._refs1:
+      for ref2 in self._refs2:
+        yield ref1 * ref2
+
+class ProductTransforms(Transforms):
+
+  __slots__ = '_transforms1', '_transforms2'
+
+  @types.apply_annotations
+  def __init__(self, transforms1:stricttransforms, transforms2:stricttransforms):
+    self._transforms1 = transforms1
+    self._transforms2 = transforms2
+    super().__init__(transforms1.fromdims+transforms2.fromdims)
+
+  def __iter__(self):
+    for trans1 in self._transforms1:
+      for trans2 in self._transforms2:
+        yield transform.Bifurcate(trans1, trans2),
+
+  def __getitem__(self, item):
+    assert numeric.isint(item)
+    index1, index2 = divmod(item, len(self._transforms2))
+    return transform.Bifurcate(self._transforms1[index1], self._transforms2[index2]),
+
+  def __len__(self):
+    return len(self._transforms1) * len(self._transforms2)
+
+  def index_with_tail(self, trans):
+    if isinstance(trans, function.TransformChain):
+      return TransformsIndexWithTail(self, trans)
+    bf = trans[0]
+    assert isinstance(bf, transform.Bifurcate)
+    index1, tail1 = self._transforms1.index_with_tail(bf.trans1[:-1])
+    index2, tail2 = self._transforms2.index_with_tail(bf.trans2[:-1])
+    return index1*len(self._transforms2)+index2, None # FIXME
+
 class ProductTopology(Topology):
   'product topology'
 
@@ -2363,15 +2429,18 @@ class ProductTopology(Topology):
 
   @property
   def references(self):
-    return tuple(ref1 * ref2 for ref1 in self.topo1.references for ref2 in self.topo2.references)
+    return ProductReferences(self.topo1.references, self.topo2.references)
 
   @property
   def transforms(self):
-    return TransformsTuple(tuple((transform.Bifurcate(trans1, trans2),) for trans1 in self.topo1.transforms for trans2 in self.topo2.transforms), self.ndims)
+    return ProductTransforms(self.topo1.transforms, self.topo2.transforms)
 
   @property
   def opposites(self):
-    return TransformsTuple(tuple((transform.Bifurcate(opp1, opp2),) if (trans1 != opp1) != (trans2 != opp2) else (transform.Bifurcate(trans1, trans2),) for trans1, opp1 in zip(self.topo1.transforms, self.topo1.opposites) for trans2, opp2 in zip(self.topo2.transforms, self.topo2.opposites)), self.ndims)
+    if (self.topo1.opposites != self.topo1.transforms) != (self.topo2.opposites != self.topo2.transforms):
+      return ProductTransforms(self.topo1.opposites, self.topo2.opposites)
+    else:
+      return self.transforms
 
   @property
   def refined(self):
@@ -2412,11 +2481,12 @@ class ProductTopology(Topology):
 class RevolutionTopology(Topology):
   'topology consisting of a single revolution element'
 
-  __slots__ = 'references', 'transforms', 'opposites', 'boundary'
+  __slots__ = 'references', 'transforms', 'opposites', 'boundary', '_root'
 
   def __init__(self):
     self.references = element.RevolutionReference(),
-    self.opposites = self.transforms = TransformsTuple([(transform.Identifier(1, 'angle'),)], 1)
+    self._root = transform.Identifier(1, 'angle')
+    self.transforms = self.opposites = TransformsTuple([(self._root,)], 1)
     self.boundary = EmptyTopology(ndims=0)
     super().__init__(ndims=1)
 
