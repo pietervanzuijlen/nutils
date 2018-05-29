@@ -507,4 +507,31 @@ def accumulate(data, index, shape):
   numpy.add.at(retval, tuple(index), data)
   return retval
 
+def sorted_index(sorted_array, values, *, missing=None):
+  values = numpy.asarray(values)
+  indices = numpy.searchsorted(sorted_array, values)
+  if len(sorted_array):
+    found = numpy.equal(sorted_array[indices - numpy.equal(indices, len(sorted_array))], values)
+  else:
+    found = numpy.zeros(values.shape, dtype=bool)
+  if missing is None:
+    if not found.all():
+      raise ValueError
+    else:
+      return types.frozenarray(indices, copy=False)
+  elif isnumber(missing):
+    indices[~found] = missing
+    return types.frozenarray(indices, copy=False)
+  else:
+    raise ValueError
+
+def sorted_isin(sorted_values, sorted_set):
+  sorted_values = numpy.asarray(sorted_values)
+  if len(sorted_set):
+    indices = numpy.searchsorted(sorted_set, sorted_values)
+    found = numpy.equal(sorted_set[indices - numpy.equal(indices, len(sorted_set))], sorted_values)
+    return types.frozenarray(found, copy=False)
+  else:
+    return types.frozenarray.full(sorted_values.shape, False)
+
 # vim:shiftwidth=2:softtabstop=2:expandtab:foldmethod=indent:foldnestmax=2
