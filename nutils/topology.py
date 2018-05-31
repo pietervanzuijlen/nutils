@@ -885,6 +885,8 @@ class Topology(types.Singleton):
     return sample.Sample((tuple(transforms), tuple(opposites)), points_, index)
 
   def supp(self, basis, mask=None):
+    if not isinstance(basis, Basis):
+      raise ValueError("argument 'basis' should be of type 'Basis' but got {!r}".format(basis))
     if mask is None:
       mask = numpy.ones(len(basis), dtype=bool)
     elif isinstance(mask, list) or numeric.isarray(mask) and mask.dtype == int:
@@ -893,16 +895,11 @@ class Topology(types.Singleton):
       mask = tmp
     else:
       assert numeric.isarray(mask) and mask.dtype == bool and mask.shape == basis.shape[:1]
-    indfunc = function.Tuple([ind[0] for ind, f in function.blocks(basis)])
     subset = []
     for ielem, trans in enumerate(self.transforms):
-      try:
-        ind, = numpy.concatenate(indfunc.eval(_transforms=(trans,)), axis=1)
-      except function.EvaluationError:
-        pass
-      else:
-        if mask[ind].any():
-          subset.append(ielem)
+      dofs = basis.get_dofs(ielem)
+      if mask[dofs].any():
+        subset.append(ielem)
     if not subset:
       return EmptyTopology(self.ndims)
     return self.subset(UnstructuredTopology(self.ndims, (self.references[i] for i in subset), (self.transforms[i] for i in subset), (self.opposites[i] for i in subset)), newboundary='supp', strict=True)
