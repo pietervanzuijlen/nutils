@@ -271,6 +271,32 @@ class ExplicitBasis(Basis):
     inflated = function.Inflate(value, dofmap, self.shape[0], axis=0)
     return inflated.simplified
 
+class MaskedBasis(Basis):
+
+  __slots__ = '_basis', '_dofmap'
+
+  @types.apply_annotations
+  def __init__(self, basis:strictbasis, mask:types.frozenarray[bool]):
+    self._basis = basis
+    self._dofmap, = numpy.where(mask)
+    super().__init__(ndofs=len(self._dofmap), transforms=basis.transforms)
+
+  def _get_dofs_mask(self, ielem):
+    basedofs = self._basis.get_dofs(ielem)
+    dofs = numpy.searchsorted(self._dofmap, basedofs)
+    mask = numpy.equal(self._dofmap[numpy.minimum(dofs, len(self)-1)], basedofs)
+    return types.frozenarray(dofs[mask], dtype=types.strictint, copy=False), mask
+
+  def get_dofs(self, ielem):
+    return self._get_dofs_mask(ielem)[0]
+
+  def get_coefficients(self, ielem):
+    mask = self._get_dofs_mask(ielem)[1]
+    return self._basis.get_coefficients(ielem)[mask]
+
+  def get_support(self, dof):
+    return self._basis.get_support(self._dofmap[dof])
+
 class Topology(types.Singleton):
   'topology base class'
 
@@ -754,7 +780,7 @@ class Topology(types.Singleton):
       for trans in self.transforms:
         dofs = dofmap.eval(_transforms=(trans,))
         used[dofs] = True
-    return function.mask(basis, used)
+    return MaskedBasis(basis, mask)
 
   def locate(self, geom, coords, ischeme='vertex', scale=1, tol=1e-12, eps=0, maxiter=100, *, arguments=None):
     '''Create a sample based on physical coordinates.
@@ -1294,7 +1320,7 @@ class StructuredLine(Topology):
 
     mask = numpy.ones(ndofs, dtype=bool)
     mask[list(removedofs)] = False
-    return function.mask(func, mask)
+    return MaskedBasis(basis, mask)
 
   def basis_discont(self, degree):
     'discontinuous shape functions'
@@ -1328,7 +1354,7 @@ class StructuredLine(Topology):
 
     mask = numpy.ones(ndofs, dtype=bool)
     mask[list(removedofs)] = False
-    return function.mask(func, mask)
+    return MaskedBasis(func, mask)
 
   def __str__(self):
     'string representation'
@@ -1911,7 +1937,7 @@ class StructuredTopology(Topology):
       if idofs:
         mask[..., [numeric.normdim(ndofs,idof) for idof in idofs]] = False
     assert mask.shape == tuple(dofshape)
-    return function.mask(func, mask.ravel())
+    return MaskedBasis(func, mask.ravel())
 
   @staticmethod
   def _localsplinebasis (lknots, p):
@@ -2000,7 +2026,7 @@ class StructuredTopology(Topology):
       if idofs:
         mask[..., [numeric.normdim(ndofs,idof) for idof in idofs]] = False
     assert mask.shape == tuple(dofshape)
-    return function.mask(func, mask.ravel())
+    return MaskedBasis(func, mask.ravel())
 
   @property
   def refined(self):
