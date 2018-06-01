@@ -276,10 +276,10 @@ class MaskedBasis(Basis):
   __slots__ = '_basis', '_dofmap'
 
   @types.apply_annotations
-  def __init__(self, basis:strictbasis, mask:types.frozenarray[bool]):
+  def __init__(self, basis:strictbasis, mask:types.frozenarray[bool], trans=function.TRANS):
     self._basis = basis
     self._dofmap, = numpy.where(mask)
-    super().__init__(ndofs=len(self._dofmap), transforms=basis.transforms)
+    super().__init__(ndofs=len(self._dofmap), transforms=basis.transforms, trans=trans)
 
   def _get_dofs_mask(self, ielem):
     basedofs = self._basis.get_dofs(ielem)
@@ -2750,6 +2750,30 @@ class ProductTransforms(Transforms):
     index2, tail2 = self._transforms2.index_with_tail(bf.trans2[:-1])
     return index1*len(self._transforms2)+index2, None # FIXME
 
+class ProductBasis(Basis):
+
+  __slots__ = '_basis1', '_basis2'
+
+  @types.apply_annotations
+  def __init__(self, basis1:strictbasis, basis2:strictbasis, trans=function.TRANS):
+    self._basis1 = basis1
+    self._basis2 = basis2
+    super().__init__(self._basis1.ndofs*self._basis2.ndofs, ProductTransforms(self._basis1.transforms, self._basis2.transforms), trans=trans)
+
+  def get_dofs(self, ielem):
+    assert numeric.isint(ielem)
+    ielem1, ielem2 = divmod(ielem, len(self._basis2.transforms))
+    dofs1 = self._basis1.get_dofs(ielem1)
+    dofs2 = self._basis2.get_dofs(ielem2)
+    return types.frozenarray(numpy.add.outer(dofs1*self._basis2.ndofs, dofs2).ravel(), dtype=types.strictint, copy=False)
+
+  def get_coefficients(self, ielem):
+    assert numeric.isint(ielem)
+    ielem1, ielem2 = divmod(ielem, len(self._basis2.transforms))
+    coeffs1 = self._basis1.get_coefficients(ielem1)
+    coeffs2 = self._basis2.get_coefficients(ielem2)
+    return numeric.poly_outer_product(coeffs1, coeffs2)
+
 class ProductTopology(Topology):
   'product topology'
 
@@ -2820,6 +2844,30 @@ class ProductTopology(Topology):
   def interfaces(self):
     return self.topo1 * self.topo2.interfaces + self.topo1.interfaces * self.topo2
 
+class RevolutionBasis(Basis):
+
+  __slots__ = ()
+
+  @types.apply_annotations
+  def __init__(self, root:transform.stricttransformitem, trans=function.TRANS):
+    super().__init__(ndofs=1, transforms=TransformsTuple([(root,)], 1), trans=trans)
+
+  def get_dofs(self, ielem):
+    assert numeric.isint(ielem)
+    if ielem != 0:
+      raise IndexError
+    return types.frozenarray([0], dtype=types.strictint, copy=False)
+
+  def get_coefficients(self, ielem):
+    assert numeric.isint(ielem)
+    if ielem != 0:
+      raise IndexError
+    return types.frozenarray([[1]], dtype=types.strictint, copy=False)
+
+  @property
+  def simplified(self):
+    return function.asarray([1])
+
 class RevolutionTopology(Topology):
   'topology consisting of a single revolution element'
 
@@ -2833,7 +2881,7 @@ class RevolutionTopology(Topology):
     super().__init__(ndims=1)
 
   def basis(self, name, *args, **kwargs):
-    return function.asarray([1])
+    return RevolutionBasis(self._root)
 
 class PatchBoundary(types.Singleton):
 
