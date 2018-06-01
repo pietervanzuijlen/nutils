@@ -2539,7 +2539,6 @@ class HierarchicalTopology(Topology):
     return UnstructuredTopology(self.ndims-1, references, transforms, opposites)
 
   @log.title
-  @cache.function
   def basis(self, name, *args, truncation_tolerance=1e-15, **kwargs):
     '''Create hierarchical basis.
 
