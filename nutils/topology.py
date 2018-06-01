@@ -247,7 +247,7 @@ class Basis(function.Array):
 
 strictbasis = types.strict[Basis]
 
-class ExplicitBasis(Basis):
+class PlainBasis(Basis):
 
   __slots__ = '_coeffs', '_dofs'
 
@@ -255,6 +255,9 @@ class ExplicitBasis(Basis):
   def __init__(self, coefficients:types.tuple[types.frozenarray], dofs:types.tuple[types.frozenarray], ndofs:types.strictint, transforms:stricttransforms, trans=function.TRANS):
     self._coeffs = coefficients
     self._dofs = dofs
+    assert len(self._coeffs) == len(self._dofs) == len(transforms)
+    assert all(c.ndim == 1+transforms.fromdims for c in self._coeffs)
+    assert all(len(c) == len(d) for c, d in zip(self._coeffs, self._dofs))
     super().__init__(ndofs=ndofs, transforms=transforms, trans=trans)
 
   def get_dofs(self, ielem):
@@ -974,7 +977,7 @@ class Topology(types.Singleton):
       nmap.append(types.frozenarray(ndofs + numpy.arange(len(elemcoeffs)), copy=False))
       ndofs += len(elemcoeffs)
     degrees = set(n-1 for c in coeffs for n in c.shape[1:])
-    return ExplicitBasis(coeffs, nmap, ndofs, self.transforms)
+    return PlainBasis(coeffs, nmap, ndofs, self.transforms)
 
   def _basis_c0_structured(self, name, degree):
     'C^0-continuous shape functions with lagrange stucture'
@@ -1012,7 +1015,7 @@ class Topology(types.Singleton):
 
     elem_slices = map(slice, offsets[:-1], offsets[1:])
     dofs = tuple(types.frozenarray(dofmap[s]) for s in elem_slices)
-    return ExplicitBasis(coeffs, dofs, ndofs, self.transforms)
+    return PlainBasis(coeffs, dofs, ndofs, self.transforms)
 
   def basis_lagrange(self, degree):
     'lagrange shape functions'
@@ -1311,7 +1314,7 @@ class StructuredLine(Topology):
         coeffs = coeffs[:p-1] + coeffs[p-1:p] * (nelems-2*(p-1)) + coeffs[p:]
     coeffs = types.frozenarray(coeffs, copy=False)
 
-    func = ExplicitBasis(coeffs, dofs, ndofs, self.transforms)
+    func = PlainBasis(coeffs, dofs, ndofs, self.transforms)
     if not removedofs:
       return func
 
@@ -1326,7 +1329,7 @@ class StructuredLine(Topology):
     coeffs = [ref.get_poly_coeffs('bernstein', degree=degree)]*len(self)
     ndofs = ref.get_ndofs(degree)
     dofs = types.frozenarray(numpy.arange(ndofs*len(self), dtype=int).reshape(len(self), ndofs), copy=False)
-    return ExplicitBasis(coeffs, dofs, ndofs*len(self), self.transforms)
+    return PlainBasis(coeffs, dofs, ndofs*len(self), self.transforms)
 
   def basis_std(self, degree, periodic=None, removedofs=None):
     'spline from vertices'
@@ -1345,7 +1348,7 @@ class StructuredLine(Topology):
     dofs = types.frozenarray(dofs, copy=False)
 
     coeffs = [element.LineReference().get_poly_coeffs('bernstein', degree=degree)]*len(self)
-    func = ExplicitBasis(coeffs, dofs, ndofs, self.transforms)
+    func = PlainBasis(coeffs, dofs, ndofs, self.transforms)
     if not removedofs:
       return func
 
@@ -1979,7 +1982,7 @@ class StructuredTopology(Topology):
     coeffs = [ref.get_poly_coeffs('bernstein', degree=degree)]*len(self)
     ndofs = ref.get_ndofs(degree)
     dofs = types.frozenarray(numpy.arange(ndofs*len(self), dtype=int).reshape(len(self), ndofs), copy=False)
-    return ExplicitBasis(coeffs, dofs, ndofs*len(self), self.transforms)
+    return PlainBasis(coeffs, dofs, ndofs*len(self), self.transforms)
 
   def basis_std(self, degree, removedofs=None, periodic=None):
     'spline from vertices'
@@ -2106,7 +2109,7 @@ class SimplexTopology(Topology):
     nverts = self.simplices.max() + 1
     ndofs = nverts + len(self)
     nmap = [types.frozenarray(numpy.hstack([idofs, nverts+ielem]), copy=False) for ielem, idofs in enumerate(self.simplices)]
-    return ExplicitBasis([coeffs] * len(self), nmap, ndofs, self.transforms)
+    return PlainBasis([coeffs] * len(self), nmap, ndofs, self.transforms)
 
 class UnionTopology(Topology):
   'grouped topology'
@@ -2694,7 +2697,7 @@ class HierarchicalTopology(Topology):
       hbasis_dofs.append(numpy.concatenate(trans_dofs))
       hbasis_coeffs.append(numeric.poly_concatenate(trans_coeffs))
 
-    return ExplicitBasis(hbasis_coeffs, hbasis_dofs, ndofs, self.transforms)
+    return PlainBasis(hbasis_coeffs, hbasis_dofs, ndofs, self.transforms)
 
 class ProductReferences(types.Singleton):
 
@@ -3090,7 +3093,7 @@ class MultipatchTopology(Topology):
       dofmap = tuple(types.frozenarray(tuple(renumber[merge.get(dof, dof)] for dof in v.flat), dtype=int).reshape(v.shape) for v in dofmap)
       dofcount = len(remainder)
 
-    return ExplicitBasis(coeffs, dofmap, dofcount, self.transforms)
+    return PlainBasis(coeffs, dofmap, dofcount, self.transforms)
 
   def basis_discont(self, degree):
     'discontinuous shape functions'
@@ -3117,7 +3120,7 @@ class MultipatchTopology(Topology):
         coeffs.append(elem_coeffs)
         dofs.append(types.frozenarray(ndofs+elem_dofs, copy=False))
       ndofs += len(basis)
-    return ExplicitBasis(coeffs, dofs, ndofs, self.transforms)
+    return PlainBasis(coeffs, dofs, ndofs, self.transforms)
 
   def basis_patch(self):
     'degree zero patchwise discontinuous basis'
@@ -3125,7 +3128,7 @@ class MultipatchTopology(Topology):
     npatches = len(self.patches)
     coeffs = [types.frozenarray(1, dtype=int).reshape(1, *(1,)*self.ndims)]*npatches
     dofs = types.frozenarray(range(npatches), dtype=int)[:,_]
-    return ExplicitBasis(coeffs, dofs, npatches, TransformsTuple(tuple((patch.topo.root,) for patch in self.patches), self.ndims))
+    return PlainBasis(coeffs, dofs, npatches, TransformsTuple(tuple((patch.topo.root,) for patch in self.patches), self.ndims))
 
   @property
   def boundary(self):
