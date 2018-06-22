@@ -190,11 +190,11 @@ class Basis(function.Array):
 
     Returns
     -------
-    support : :class:`frozenset`
+    support : sorted and unique :class:`numpy.ndarray`
         The elements (as indices) where function ``dof`` has support.
     '''
 
-    return frozenset(ielem for ielem in range(len(self.transforms)) if numpy.equal(self.get_dofs(ielem), dof).any())
+    return numpy.unique([ielem for ielem in range(len(self.transforms)) if numpy.equal(self.get_dofs(ielem), dof).any()])
 
   @abc.abstractmethod
   def get_dofs(self, ielem):
@@ -1546,7 +1546,7 @@ class StructuredBasis(Basis):
       ntrans *= ntrans_i
     if dof != 0:
       raise IndexError
-    return frozenset(functools.reduce(numpy.add.outer, supports).flat)
+    return numpy.unique(functools.reduce(numpy.add.outer, supports).ravel())
 
 class StructuredTopology(Topology):
   'structured topology'
@@ -2236,10 +2236,11 @@ class SubsetBasis(Basis):
     return self._basis.get_coefficients(self._transmap[ielem])
 
   def get_support(self, dof):
-    basesupport = numpy.array(sorted(self._basis.get_support(self._dofmap[dof])))
+    basesupport = self._basis.get_support(self._dofmap[dof])
     support = numpy.searchsorted(self._transmap, basesupport)
     mask = numpy.equal(numpy.take(self._transmap, numpy.minimum(support, len(self._transmap)-1)), basesupport)
-    return frozenset(support[mask])
+    # Since both `basesupport` and `self._transmap` are sored, so is `support[mask]`.
+    return support[mask]
 
 class SubsetTopology(Topology):
   'trimmed'
@@ -2607,38 +2608,36 @@ class HierarchicalTopology(Topology):
       topo_transforms = topo.transforms
       # The level-local element indices of the elements of this level that are
       # embedded in this hierarchical topology.
-      ielems_i = set()
+      ielems_i = []
       # The level-local element indices of the elements of this level that are
       # exactly present, i.e. without tail, in this hierarchical topology.
-      touchelems_i = []
+      touchielems_i = []
       for iglobal, trans in enumerate(self.transforms):
         try:
           ilocal, tail = topo_transforms.index_with_tail(trans)
         except ValueError:
           continue
-        ielems_i.add(ilocal)
+        ielems_i.append(ilocal)
         if not tail:
-          touchelems_i.append(ilocal)
+          touchielems_i.append(ilocal)
         assert len(local_ielem_map[iglobal]) == i
         local_ielem_map[iglobal].append(ilocal)
-      ielems_i = frozenset(ielems_i)
+      ielems_i = numpy.unique(ielems_i)
+      touchielems_i = numpy.unique(touchielems_i)
 
       basis_i = topo.basis(name, *args, **kwargs)
       assert isinstance(basis_i, Basis)
       ubases.append(basis_i)
-      # Find all basis functions with partial support on `touchelems_i` that
-      # are either completely support in this level (`active_i`) or not
-      # (`passive_i`).
-      active_i, passive_i = set(), set()
-      for index in touchelems_i:
-        for dof in basis_i.get_dofs(index):
-          if dof in active_i or dof in passive_i:
-            continue
-          (active_i if basis_i.get_support(dof) <= ielems_i else passive_i).add(dof)
-      ubasis_active.append(numpy.array(sorted(active_i), dtype=int))
-      ubasis_passive.append(numpy.array(sorted(passive_i), dtype=int))
+      # Basis functions that have at least one touchelem in their support.
+      touchdofs_i = numpy.unique(numpy.fromiter(itertools.chain.from_iterable(map(basis_i.get_dofs, touchielems_i)), dtype=int))
+      # Basis functions with (partial) support in this hierarchical topology.
+      partsuppdofs_i = numpy.union1d(touchdofs_i, numpy.unique(numpy.fromiter(itertools.chain.from_iterable(map(basis_i.get_dofs, numpy.setdiff1d(ielems_i, touchielems_i, assume_unique=True))), dtype=int)))
+      # Mask of basis functions in `partsuppdofs_i` with strict support in this hierarchical topology.
+      partsuppdofs_supported_i = numpy.array([numpy.in1d(basis_i.get_support(dof), ielems_i, assume_unique=True).all() for dof in partsuppdofs_i], dtype=bool)
+      ubasis_active.append(numpy.intersect1d(touchdofs_i, partsuppdofs_i[partsuppdofs_supported_i], assume_unique=True))
+      ubasis_passive.append(partsuppdofs_i[~partsuppdofs_supported_i])
       offsets.append(ndofs)
-      ndofs += len(active_i)
+      ndofs += len(ubasis_active[-1])
 
     # 2. construct hierarchical polynomials
     hbasis_dofs = []
