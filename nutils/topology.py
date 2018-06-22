@@ -2681,7 +2681,7 @@ class HierarchicalTopology(Topology):
             trans_dofs.append(offsets[h]+imyactive[myactive])
             trans_coeffs.append(truncpoly[myactive])
 
-          mypassive = numeric.sorted_isin(numpy.sort(mydofs), ubasis_passive[h])
+          mypassive = numeric.sorted_contains(ubasis_passive[h], mydofs)
           if not mypassive.any():
             break
 

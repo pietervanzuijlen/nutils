@@ -511,7 +511,7 @@ def sorted_index(sorted_array, values, *, missing=None):
   values = numpy.asarray(values)
   indices = numpy.searchsorted(sorted_array, values)
   if len(sorted_array):
-    found = numpy.equal(sorted_array[indices - numpy.equal(indices, len(sorted_array))], values)
+    found = numpy.equal(sorted_array[numpy.minimum(indices, len(sorted_array)-1)], values)
   else:
     found = numpy.zeros(values.shape, dtype=bool)
   if missing is None:
@@ -519,19 +519,19 @@ def sorted_index(sorted_array, values, *, missing=None):
       raise ValueError
     else:
       return types.frozenarray(indices, copy=False)
-  elif isnumber(missing):
+  elif isint(missing):
     indices[~found] = missing
     return types.frozenarray(indices, copy=False)
   else:
     raise ValueError
 
-def sorted_isin(sorted_values, sorted_set):
-  sorted_values = numpy.asarray(sorted_values)
+def sorted_contains(sorted_set, values):
+  values = numpy.asarray(values)
   if len(sorted_set):
-    indices = numpy.searchsorted(sorted_set, sorted_values)
-    found = numpy.equal(sorted_set[indices - numpy.equal(indices, len(sorted_set))], sorted_values)
+    indices = numpy.searchsorted(sorted_set, values)
+    found = numpy.equal(sorted_set[numpy.minimum(indices, len(sorted_set)-1)], values)
     return types.frozenarray(found, copy=False)
   else:
-    return types.frozenarray.full(sorted_values.shape, False)
+    return types.frozenarray.full(values.shape, False)
 
 # vim:shiftwidth=2:softtabstop=2:expandtab:foldmethod=indent:foldnestmax=2
